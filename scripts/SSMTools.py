@@ -466,3 +466,25 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
 
     return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
 
+
+### Log likelihood
+def logL(X, Y, pi0, sigma0, A, C, Q, R):
+    logLs = np.zeros(Y.shape[1])
+
+    for t in range(Y.shape[1]):
+        # Observation contribution to likelihood
+        obsRes = np.nan_to_num(Y[:, t] - np.dot(C, X[:, t]))
+
+        logLs[t] = -0.5*np.dot(obsRes, np.dot(np.linalg.inv(R), obsRes))
+
+        if t >= 1:
+            # Hidden state contribution to likelihood
+            dynamRes = X[:, t] - np.dot(A, X[:, t-1])
+            logLs[t] = logLs[t] - 0.5*np.dot(dynamRes, np.dot(np.linalg.inv(Q), dynamRes))
+
+    # Prior's contribution to likelihood
+    logLs[0] = logLs[0] - 0.5*np.dot(X[:, 0] - pi0, np.dot(np.linalg.inv(sigma0), X[:, 0] - pi0))
+
+    return logLs
+
+

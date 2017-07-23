@@ -1,0 +1,96 @@
+\documentclass[12pt]{article}
+ \usepackage[margin=1in]{geometry} 
+\usepackage{amsmath,amsthm,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+ 
+\newcommand{\bigo}{\mathcal{O}}
+\newcommand{\M}{\mathcal{M}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+ 
+\newenvironment{problem}[2][Problem]{\begin{trivlist}
+\item[\hskip \labelsep {\bfseries #1}\hskip \labelsep {\bfseries #2.}]}{\end{trivlist}}
+%If you want to title your bold things something different just make another thing exactly like this but replace "problem" with the name of the thing you want, like theorem or lemma or whatever
+ 
+\begin{document}
+ 
+%\renewcommand{\qedsymbol}{\filledbox}
+%Good resources for looking up how to do stuff:
+%Binary operators: http://www.access2science.com/latex/Binary.html
+%General help: http://en.wikibooks.org/wiki/LaTeX/Mathematics
+%Or just google stuff
+ 
+\title{Imputing time series data with latent factors}
+\author{Adam Coogan}
+\maketitle
+
+\section{Algorithm}
+
+Let the data $t \times N$ matrix for a cluster with $N$ sensors at a given time $t$ be
+\begin{align*}
+    D^{1:t} = \begin{pmatrix}
+        d_{1\ 1} & \dots & d_{1\ N}\\
+        \vdots & \ddots & \vdots\\
+        d_{t\ 1} & \dots & d_{t\ N}
+    \end{pmatrix}.
+\end{align*}
+Some of the data points will be missing.  My approach is to fill in missing data in the last row of $D^{1:t}$ by applying a static ``recommender system'' algorithm to the last $\Delta t$ rows of the matrix, $D^{t-\Delta t:t}$. This simple prescription turns any static recommender into one that can be applied online. The algorithm runs online (ie, each time a new observation containing missing data comes in).
+
+I use a latent factor model to fill in the missing data. The idea is that while the dimension of $D^{t-\Delta t:t}$ is $\Delta t \times N$, its rank is much lower since the sensors are all sampling the same weather patterns. We therefore want to find the low rank approximation
+\begin{align*}
+    D^{t-\Delta t:t} &\approx U V^T,
+\end{align*}
+where $U$ is a $\Delta t \times k$ matrix, $V$ is a $N \times k$ matrix and $k \ll \min(\Delta t, N)$. $k$ is the number of latent factors in the model. Singular value decomposition is of course one method for finding $U$ and $V$. While SVD is optimal when all of the data is observed, it is not necessarily optimal when there is missing data.
+
+$U$ and $V$ can be found by solving minimizing an objective function:
+\begin{align*}
+    U, V &= \argmin_{\tilde{U}, \tilde{V}} f(\tilde{U}, \tilde{V}),\\
+    f(\tilde{U}, \tilde{V}) &\equiv \left[ \sum_{(i,j)\in \bigo} \left( D^{t-\Delta t:t}_{ij} - (\tilde{U} \tilde{V}^T)_{ij} \right)^2 \right],
+\end{align*}
+where $\bigo$ is the set of indices $(i,j)$ for which $D^{t-\Delta t:t}_{ij}$ is observed. This is simple to solve using gradient descent. As initial guesses, I choose each element of $U$ and $V$ from
+\begin{align*}
+    \mathcal{N}\left( \frac{\mu_{t-\Delta t:t}}{\sqrt{|\mu_{t-\Delta t:t}|}}, \frac{\sigma_{t-\Delta t:t}}{\sqrt{|\mu_{t-\Delta t:t}|}} \right),
+\end{align*}
+where $\mu_{t-\Delta t:t}$ and $\sigma_{t-\Delta t:t}$ are the mean and standard deviation of the observed entries in $D^{t-\Delta t:t}$. The normalization ensures that $U$ and $V$'s elements change by a similar amount during each step of gradient descent. Since the problem is nonconvex, the objective function has many local minima; the imputation algorithm should therefore be run multiple times and the resulting imputed values averaged.
+
+Since the optimization problem is underdetermined, it is important that $k$ be small. $k$ can be set by cross-validation, where the validation set is created by removing data for a single sensor from times during which few observations are missing. I've found that $k=1$ works well. The other parameter in the model is the window size, $\Delta t$, and can also be set using cross-validation.
+
+The algorithm has issues if a whole column of $D^{t-\Delta t:t}$ is missing (ie, if sensor $i$ has no observations over the window). In this case it is impossible to determine the corresponding row $V_{i1}, \dots, V_{ik}$ in $V$ which specifies how $U$'s columns scale and sum to form the sensor's time series. The best solution I've come up with in this situation is to add in the last imputed (or observed) data point for the sensor, which is $D^{1:t}_{t-\Delta t-1:i}$. This biases the algorithm towards past observations and can lead to numerical instability.
+
+\begin{algorithm}
+    \caption{Latent factor imputation}
+    \begin{algorithmic}[1]
+        %\State $D^{1:t} \gets \textrm{full $t \times N$ data matrix}$
+        \State $\hat{D}^{t-\Delta t:t} \gets \textrm{last $\Delta t$ rows of $D^{1:t}$}$\\
+
+        \For{$s = 1, \dots, N$}
+            %\Comment{If sensor has no data, put last observed or imputed point into first time slot}
+            \If{$\hat{D}^{t-\Delta t:t}_{1 s}, \dots, \hat{D}^{t-\Delta t:t}_{\Delta t s} = {\rm nan}$}
+                \State $\hat{D}^{t-\Delta t:t}_{1\ s} \gets D^{1:t}_{t-\Delta t-1:s}$
+            \EndIf
+        \EndFor\\
+
+        \State $\bigo \gets \textrm{set of indices for which data was observed}$
+        \State $\M \gets \textrm{set of indices for which data is missing}$
+        \State $n_{\rm LF} \gets \textrm{number of latent factors}$\\
+
+        \State $n_{\rm runs} \gets \textrm{number of times to run gradient descent}$
+        \State $\hat{A} \gets \textrm{$\Delta t\times N$ matrix of zeros to hold average of gradient descent solutions}$\\
+        \For{$i = 1, \dots, n_{\rm runs}$}
+            \State $U, V \gets \textrm{generate initial guesses as described above}$
+            \State $U, V \gets \textrm{get gradient descent solution of $\argmin_{U,V}f(U,V)$}$
+            \State $\hat{A} \gets \hat{A} + \frac{1}{n_{\rm runs}} UV^T$
+        \EndFor\\
+
+        \For{$(i,j)\in \M$}
+        \State $\hat{D}^{t-\Delta t:t}_{ij} = \hat{A}_{ij}$
+        \EndFor\\\\
+
+        \Return $\hat{D}^{t-\Delta t:t}$
+
+    \end{algorithmic}
+\end{algorithm}
+
+\end{document}
+
+

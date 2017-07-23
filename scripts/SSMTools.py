@@ -43,6 +43,44 @@ def pcaEst(Y, nLF):
 
     return np.dot(l, fT), l, fT
 
+def pcaEstMD(Y, nLF, maxIt=11):
+    """
+    Performs PCA fit to Lambda, F_t using the missing data strategy from Bai+Ng 2002. Assumes the data is
+    already standardized/preprocessed.
+
+    Arguments
+    -Y: N x T numpy array
+        Data array
+    -nLF: int
+        Number of latent variables to use
+
+    Returns
+    -N x T numpy array
+        Estimate of Y from estimated factors and loadings
+    -N x nLF numpy array
+        Estimate of loadings
+    -nLF x T numpy array
+        Estimate of factors
+    """
+    Ytmp = Y.copy()
+    N = Ytmp.shape[0]
+
+    # Replace nans with average to start
+    rowNanIdx, colNanIdx = np.where(np.isnan(Y))
+    Ytmp[(rowNanIdx, colNanIdx)] = np.nanmean(Y)
+
+    l, fT = None, None
+
+    for i in range(0, maxIt):
+        # Get current lambda and F_t estimates
+        _, l, fT = pcaEst(Ytmp, nLF)
+
+        # Replace nans with new estimates
+        for i, j in zip(rowNanIdx, colNanIdx):
+            Ytmp[i, j] = np.dot(l[i, :], fT[:, j])
+
+    return np.dot(l, fT), l, fT
+
 ##### Kalman smoother
 def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     """

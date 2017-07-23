@@ -81,6 +81,58 @@ def pcaEstMD(Y, nLF, maxIt=11):
 
     return np.dot(l, fT), l, fT
 
+def kfSetup(Y, C, fTHat, nLF, tVar=10):
+    """
+    Sets up matrices, initial state and initial covariance estimates for the Kalman filter
+
+    Arguments:
+    -Y: N x T float array
+        Data matrix
+    -C: N x nLF float array
+        Loadings matrix
+    -fTHat: nLF x T float array
+        Hidden state estimate
+    -nLF: int
+        Number of latent factors
+    -tVar: int
+        Number of observations at beginning of series to use when computing hidden state noise estimate
+
+    Returns
+    -nLF numpy array
+        Initial hidden state estimate (pi0)
+    -nLF x nLF numpy array
+        Initial hidden state covariance estimate (sigma0)
+    -nLF x nLF
+        Hidden state transition matrix (A)
+    -nLF x nLF numpy array
+        Hidden state noise estimate (Q)
+    -N x N numpy array
+        Observation noise estimate (R)
+    """
+    N, T = Y.shape
+    # Estimate A by regressing state onto its lag
+    clf = linear_model.LinearRegression()
+    clf.fit(fTHat[:, 0:-1].T, fTHat[:, 1:].T)
+    A = clf.coef_
+
+    # Estimate state variance from fit tVar observations
+    Q = np.diag(np.var(detrend(fTHat[:, 0:tVar]), axis=1))
+
+    # Estimate observation variance. Initial guess shouldn't matter too much...
+    obsVar = np.nanmean(np.nanvar(Y - np.dot(C, fTHat), axis=1, ddof=1))
+    R = np.diag(N*[obsVar if obsVar != 0 else np.mean(Q[0:nLF, 0:nLF]) * 0.1])
+
+    # Estimate observation variance
+    #R = np.diag(np.nanvar(Y - np.dot(C, fTHat), axis=1, ddof=1))
+    ## If there are no observations for a sensor, doesn't matter what gets filled in for its variance...
+    #meanObsVar = np.nanmean(R)
+    #R[np.isnan(R)] = meanObsVar
+
+    pi0 = fTHat[:, 0].copy().T
+    sigma0 = Q
+
+    return pi0, sigma0, A, Q, R
+
 ##### Kalman smoother
 def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     """
@@ -176,4 +228,94 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
         YImp[s, t] = np.dot(C[s, :], mu_smooth[t, :])
 
     return mu_smooth.T, sigma_smooth, sigmaLag_smooth, YImp
+
+##### M step of SSM EM algorithm
+def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
+    """
+    Estimates SSM parameters given state and covariance estimates.
+
+    Arguments
+    -YImp: N x T
+        Data matrix with nan values filled in by Kalman smoother
+    -XHat: nLF x T
+        Hidden state means E[x_t | y]
+    -P: T x nLF x nLF
+        Covariance estimate: E[x_t x_t^T | y]
+    -PLag: T-1 x nLF x nLF
+        Lagged covariance estimate: E[x_t x_{t-1}^T | y]
+    -A, C, Q, R: providing a value for one of these fixes the parameter so it won't be estimated
+
+    Returns
+    -Estimates for A, C, Q, R, pi0 and sigma0
+    """
+    N, T = YImp.shape
+
+    # Observation matrix
+    CNew = np.dot(np.dot(YImp, XHat.T), np.linalg.inv(np.sum(P, axis=0))) if C is None else C
+
+    # Observation noise covariance
+    RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(CNew, np.dot(XHat, YImp.T))) if R is None else R
+
+    # State transition matrix
+    ANew = np.dot(np.sum(PLag, axis=0), np.linalg.inv(np.sum(P[0:-1], axis=0))) if A is None else A
+
+    # State noise covariance
+    # TODO: CHECK THIS! Might need PLag.T...
+    #QNew = 1.0/float(T-1) * (np.sum(P[1:], axis=0) - np.dot(ANew, np.sum(np.transpose(PLag, axes=(0, 2, 1)),
+    #                                                                            axis=0))) if Q is None else Q
+    QNew = 1.0/(T-1.0) * np.sum([p - np.dot(ANew, pl.T) for p, pl in zip(P[1:], PLag)], axis=0)
+
+    # Initial state mean
+    pi0New = XHat[:, 0]
+
+    # Initial state covariance
+    sigma0New = P[0, :, :] - np.outer(XHat[:, 0], XHat[:, 0].T)
+
+    return ANew, CNew, QNew, RNew, pi0New, sigma0New
+
+def ssmEM(Y, nLF, maxIt=50):
+    """
+    Runs state space EM algorithm
+
+    Arguments
+    -Y: N x T numpy array
+        Data array
+    -maxIt: int
+        Number of iterations to run of EM
+
+    Returns
+    -XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
+    """
+    N, T = Y.shape
+
+    # Estimate SSM parameters with PCA, using EM to handle missing values
+    _, C, fTHat = pcaEstMD(Y, nLF, maxIt=50)
+    pi0, sigma0, A, Q, R = kfSetup(Y, C, fTHat, nLF)
+
+    # Keep track of hidden state mean and covariance
+    XHat = None
+    sigma_smooth = None
+
+    for i in range(maxIt):
+        ##### E step
+        # Estimate hidden state
+        XHat, sigma_smooth, sigmaLag_smooth, YImp = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
+
+        # Second moment
+        P = np.zeros((T, nLF, nLF))
+        for t in range(T):
+            P[t, :, :] = sigma_smooth[t, :, :] + np.outer(XHat[:, t], XHat[:, t].T)
+
+        # Lagged second moment
+        PLag = np.zeros((T-1, nLF, nLF))
+        for t in range(T-1):
+            PLag[t, :, :] = sigmaLag_smooth[t, :, :] + np.outer(XHat[:, t+1], XHat[:, t].T)
+
+        ##### M step
+        A, C, Q, R, pi0, sigma0 = mStep(YImp, XHat, P, PLag)
+
+    # Finally, re-estimate hidden state    
+    XHat, sigma_smooth, _, _ = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
+
+    return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
 

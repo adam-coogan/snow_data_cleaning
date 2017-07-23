@@ -6,6 +6,43 @@ from scipy.linalg import block_diag
 from scipy.signal import detrend
 from sklearn import linear_model
 
+##### Functions for generating initial SSM parameter/hidden state estimates
+def pcaEst(Y, nLF):
+    """
+    Performs PCA fit to Lambda, F_t assuming no missing data using the method from from Bai+Ng 2002. Assumes
+    the data is already standardized/preprocessed.
+
+    Arguments
+    -Y: N x T numpy array
+        Data array
+    -nLF: int
+        Number of latent variables to use
+
+    Returns
+    -N x T numpy array
+        Estimate of Y from estimated factors and loadings
+    -N x nLF numpy array
+        Estimate of loadings
+    -nLF x T numpy array
+        Estimate of factors
+    """
+    N = Y.shape[0]
+
+    # Observation covariance
+    SigmaY = np.dot(Y, Y.T)
+    # Find eigenvalues/vectors
+    eVals, eVecs = np.linalg.eig(SigmaY)
+    # Sort eigenvalues
+    eValIdx = np.argsort(eVals)[::-1]
+
+    # Get matrix of eigenvectors corresponding to nLF largest eigenvalues
+    l = np.sqrt(N) * eVecs[:, eValIdx[0:nLF]]
+
+    # Use PCA result to estimate factors
+    fT = np.dot(l.T, Y) / float(N)
+
+    return np.dot(l, fT), l, fT
+
 ##### Kalman smoother
 def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     """

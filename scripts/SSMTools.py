@@ -467,7 +467,6 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
 
     return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
 
-
 ### Log likelihood
 def logL(X, Y, pi0, sigma0, A, C, Q, R):
     logLs = np.zeros(Y.shape[1])

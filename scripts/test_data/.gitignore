@@ -1,0 +1,4 @@
+# Ignore everything in this directory, since it's the bin directory:                                          
+*                                                                                                             
+# Except this file                                                                                            
+!.gitignore

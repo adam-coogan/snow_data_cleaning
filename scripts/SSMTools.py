@@ -319,6 +319,7 @@ def ssmEM(Y, nLF, maxIt=50):
 
     return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
 
+##### SSM EM with state augmented by velocity
 
 def mStepAug(YImp, XHat, P, PLag, A):
     """

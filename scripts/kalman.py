@@ -105,12 +105,8 @@ class Kalman():
 
         # Predicted state covariance 
         self.sigma = np.dot(np.dot(A, self.sigma), self.A.T) + self.Q
-        
-        # if there is no control input do not include it 
-        if u is None:
-            self.mu = np.dot(A, self.mu)  # Predict state mean 
-        else:
-            self.mu = np.dot(A, self.mu) + np.dot(self.B, self.u)
+        # This is a bit of a hack. The better way to do this would be to use the eigendecomposition of sigma.
+        self.sigma = 0.5 * (self.sigma + self.sigma.T)
 
     def update(self, Y):
         '''
@@ -135,25 +131,24 @@ class Kalman():
         r[np.isnan(r)] = 0
 
         S = np.dot(np.dot(self.C, self.sigma), self.C.T) + self.R #         
-        S_inverse = np.linalg.inv(S)
+        S_inverse = np.nan
         
-        ### Eric's code starts. Not sure why he's doing this...
-        #try:
-        #    S_inverse = pinv(S)
-        #except: 
-        #    return 'nan'
-        ### Eric's code ends
+        try:
+            S_inverse = pinv(S)
+        except: 
+            return 'nan'
 
-        K = np.dot(np.dot(self.sigma, self.C.T), S_inverse) # Kalman Gain 
-
-        ### Eric's code starts. Looks like a typo!!!
-        #I_KC = np.identity(len(self.mu)) - np.dot(K,self.C)
-        #self.sigma = np.dot(np.dot(I_KC, self.sigma), I_KC.T) + np.dot(np.dot(K,self.R), K.T)
-        ### Eric's code ends
+        # Kalman Gain 
+        K = np.dot(np.dot(self.sigma, self.C.T), S_inverse)
 
         # Correct the state covariance and mean 
         self.mu = self.mu + np.dot(K, r)
-        self.sigma = np.dot(np.identity(len(self.mu)) - np.dot(K, self.C), self.sigma)
+        # Compute sigma_t|t using an EXPLICITY SYMMETRIC expression
+        #self.sigma = np.dot(I_KC, np.dot(self.sigma, I_KC.T)) + np.dot(np.dot(K, self.R), K.T)
+        I_KC = np.identity(len(self.mu)) - np.dot(K, self.C)
+        self.sigma = np.dot(I_KC, self.sigma)
+        # This is a bit of a hack. The better way to do this would be to use the eigendecomposition of sigma.
+        self.sigma = 0.5 * (self.sigma + self.sigma.T)
         
         # Update the class attribute values 
         # TODO: this seems unnecessary
@@ -292,7 +287,7 @@ def KalmanSnowdepth(series, obs_noise, system_noise=np.diag((1e0,1e-2,1e-3)), ou
         # Smoothing loop. Runs from t=T-1 to t=0    
         for t in range(len(series)-2, -1, -1): # t = T-1, ..., 0
             # Backward Kalman gain matrix
-            J = np.dot(np.dot(sigma_filt[t], K.A.T), np.linalg.inv(sigma_pred[t]))
+            J = np.dot(np.dot(sigma_filt[t], K.A.T), np.linalg.pinv(sigma_pred[t]))
 
             # Smoothed mean
             mu_smooth[t] = mu_filt[t] + np.dot(J, mu_smooth[t+1] - mu_pred[t])

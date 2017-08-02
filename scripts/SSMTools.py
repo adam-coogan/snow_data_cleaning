@@ -1,5 +1,5 @@
 import numpy as np
-from Utilities import obsFrac, scale, descale, alignSeries
+from Utilities import obsFrac, scale, descale
 from kalman import Kalman
 from scipy.stats import linregress
 from scipy.linalg import block_diag
@@ -180,10 +180,13 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
         mu_filt[t] = kf.mu
 
         # Make sure filtered covariance is positive semidefinite!
-        eigs, _ = np.linalg.eig(sigma_filt[t])
-        if len(np.where(eigs < 0)[0]) > 0 and not printedPosSemidefErr:
-            print "\tsigma_filt[%i] is not positive semidefinite"%t
-            printedPosSemidefErr = True
+        #eigs, _ = np.linalg.eig(sigma_filt[t])
+        #if len(np.where(eigs < 0)[0]) > 0 and not printedPosSemidefErr:
+        #    print "\tsigma_filt[%i] is not positive semidefinite"%t
+        #    printedPosSemidefErr = True
+        # Make sure filtered covariance is symmetric (with REALLY loose tolerance...)
+        if np.allclose(sigma_filt[t], sigma_filt[t].T, rtol=1e-4) == False:
+            print "\tsigma_filt[%i] is not symmetric..."%t
 
     # sigma_t|T, mu_t|T
     sigma_smooth = np.zeros((T, nLF, nLF))
@@ -197,7 +200,7 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     # Lagged covariance. Indexed by t-1.
     sigmaLag_smooth = np.zeros((T-1, nLF, nLF))
     # sigmaLag_{T,T-1} = (1 - K_T C) A V_{T-1|T-1}, where K_T is Kalman gain at last timestep.
-    K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T, np.linalg.inv(np.dot(kf.C, \
+    K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T, np.linalg.pinv(np.dot(kf.C, \
                                                                     np.dot(sigma_pred[-1], kf.C.T)) + kf.R)))
     sigmaLag_smooth[-1] = np.dot(np.dot((np.identity(nLF) - np.dot(K_T, kf.C)), kf.A), sigma_filt[-2])
 
@@ -207,15 +210,15 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     # Smoothing step. Runs from t=T-1 to t=0.
     for t in range(T-2, -1, -1):
         # Backward Kalman gain matrix
-        J[t] = np.dot(np.dot(sigma_filt[t], kf.A.T), np.linalg.inv(sigma_pred[t]))
+        J[t] = np.dot(np.dot(sigma_filt[t], kf.A.T), np.linalg.pinv(sigma_pred[t]))
 
         # Smoothed mean
         mu_smooth[t] = mu_filt[t] + np.dot(J[t], mu_smooth[t+1] - mu_pred[t])
 
-        # Smoothed covariance
+        # Smoothed covariance. This is explicity symmetric.
         sigma_smooth[t, :, :] = sigma_filt[t] + np.dot(np.dot(J[t], sigma_smooth[t+1] - sigma_pred[t]), J[t].T)
 
-    # Lagged smoothed covariance. Pretty sure this is correct...
+    # Lagged smoothed covariance (NOT SYMMETRIC!). Pretty sure this is correct...
     for t in range(T-3, -1, -1):
         sigmaLag_smooth[t, :, :] = np.dot(sigma_filt[t+1], J[t].T) \
                     + np.dot(np.dot(J[t+1], (sigmaLag_smooth[t+1] - np.dot(kf.A, sigma_filt[t+1]))), J[t].T)
@@ -227,7 +230,7 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     for s, t in zip(nanRows, nanCols):
         YImp[s, t] = np.dot(C[s, :], mu_smooth[t, :])
 
-    return mu_smooth.T, sigma_smooth, sigmaLag_smooth, YImp
+    return mu_smooth.T, sigma_smooth, sigmaLag_smooth, YImp, sigma_filt
 
 ##### M step of SSM EM algorithm
 def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
@@ -251,13 +254,13 @@ def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
     N, T = YImp.shape
 
     # Observation matrix
-    CNew = np.dot(np.dot(YImp, XHat.T), np.linalg.inv(np.sum(P, axis=0))) if C is None else C
+    CNew = np.dot(np.dot(YImp, XHat.T), np.linalg.pinv(np.sum(P, axis=0))) if C is None else C
 
     # Observation noise covariance
     RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(CNew, np.dot(XHat, YImp.T))) if R is None else R
 
     # State transition matrix
-    ANew = np.dot(np.sum(PLag, axis=0), np.linalg.inv(np.sum(P[0:-1], axis=0))) if A is None else A
+    ANew = np.dot(np.sum(PLag, axis=0), np.linalg.pinv(np.sum(P[0:-1], axis=0))) if A is None else A
 
     # State noise covariance
     # TODO: CHECK THIS! Might need PLag.T...
@@ -299,7 +302,7 @@ def ssmEM(Y, nLF, maxIt=50):
     for i in range(maxIt):
         ##### E step
         # Estimate hidden state
-        XHat, sigma_smooth, sigmaLag_smooth, YImp = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
+        XHat, sigma_smooth, sigmaLag_smooth, YImp, sigma_filt = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
 
         # Second moment
         P = np.zeros((T, nLF, nLF))
@@ -315,9 +318,9 @@ def ssmEM(Y, nLF, maxIt=50):
         A, C, Q, R, pi0, sigma0 = mStep(YImp, XHat, P, PLag)
 
     # Finally, re-estimate hidden state    
-    XHat, sigma_smooth, _, _ = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
+    XHat, sigma_smooth, _, _, sigma_filt = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF)
 
-    return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
+    return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0, sigma_filt
 
 ##### SSM EM with state augmented by velocity
 
@@ -343,7 +346,7 @@ def mStepAug(YImp, XHat, P, PLag, A):
     nLF = XHat.shape[0]/2
 
     # Observation matrix
-    OmegaNew = np.dot(np.dot(YImp, XHat[0:nLF,:].T), np.linalg.inv(np.sum(P[:, 0:nLF, 0:nLF], axis=0)))
+    OmegaNew = np.dot(np.dot(YImp, XHat[0:nLF,:].T), np.linalg.pinv(np.sum(P[:, 0:nLF, 0:nLF], axis=0)))
 
     # Observation noise covariance
     RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(OmegaNew, np.dot(XHat[0:nLF, :], YImp.T)))
@@ -446,7 +449,7 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
     for i in range(maxIt):
         ##### E step
         # Estimate hidden state
-        XHat, sigma_smooth, sigmaLag_smooth, YImp = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, 2*nLF)
+        XHat, sigma_smooth, sigmaLag_smooth, YImp, sigma_filt = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, 2*nLF)
 
         # Second moment
         P = np.zeros((T, 2*nLF, 2*nLF))
@@ -463,9 +466,9 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
         C = np.asarray(np.bmat([Omega, np.zeros((N, nLF))]))
 
     # Finally, re-estimate hidden state    
-    XHat, sigma_smooth, _, _ = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, 2*nLF)
+    XHat, sigma_smooth, _, _, sigma_filt = kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, 2*nLF)
 
-    return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0
+    return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0, sigma_filt
 
 ### Log likelihood
 def logL(X, Y, pi0, sigma0, A, C, Q, R):
@@ -475,15 +478,15 @@ def logL(X, Y, pi0, sigma0, A, C, Q, R):
         # Observation contribution to likelihood
         obsRes = np.nan_to_num(Y[:, t] - np.dot(C, X[:, t]))
 
-        logLs[t] = -0.5*np.dot(obsRes, np.dot(np.linalg.inv(R), obsRes))
+        logLs[t] = -0.5*np.dot(obsRes, np.dot(np.linalg.pinv(R), obsRes))
 
         if t >= 1:
             # Hidden state contribution to likelihood
             dynamRes = X[:, t] - np.dot(A, X[:, t-1])
-            logLs[t] = logLs[t] - 0.5*np.dot(dynamRes, np.dot(np.linalg.inv(Q), dynamRes))
+            logLs[t] = logLs[t] - 0.5*np.dot(dynamRes, np.dot(np.linalg.pinv(Q), dynamRes))
 
     # Prior's contribution to likelihood
-    logLs[0] = logLs[0] - 0.5*np.dot(X[:, 0] - pi0, np.dot(np.linalg.inv(sigma0), X[:, 0] - pi0))
+    logLs[0] = logLs[0] - 0.5*np.dot(X[:, 0] - pi0, np.dot(np.linalg.pinv(sigma0), X[:, 0] - pi0))
 
     return logLs
 

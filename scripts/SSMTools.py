@@ -246,12 +246,6 @@ def mStep(YImp, XHat, P, PLag):
         Covariance estimate: E[x_t x_t^T | y]
     -PLag: T-1 x nLF x nLF
         Lagged covariance estimate: E[x_t x_{t-1}^T | y]
-    -R_prior: N x N
-        An inverse Wishart prior can be specified for R. This matrix is the matrix parameter in that
-        distribution.
-    -R_prior_weight
-        The scalar parameter in the inverse Wishart prior. Should be something like N + T_s + 1, where T_s is
-        the number of observations used to find the prior from summer data.
 
     Returns
     -Estimates for A, C, Q, R, pi0 and sigma0
@@ -343,8 +337,8 @@ def mStepAug(YImp, XHat, P, PLag, A, R_prior=None, R_prior_weight=0.0):
     -PLag: T-1 x nLF x nLF
         Lagged covariance estimate: E[x_t x_{t-1}^T | y]
     -R_prior: N x N
-        An inverse Wishart prior can be specified for R. This matrix is the matrix parameter in that
-        distribution.
+        An inverse Wishart prior can be specified for R. This matrix is the matrix parameter divided by
+        R_prior_weight - N - 2 (eg, sample covariance for summer data).
     -R_prior_weight
         The scalar parameter in the inverse Wishart prior. Should be something like N + T_s + 1, where T_s is
         the number of observations used to find the prior from summer data.
@@ -363,7 +357,7 @@ def mStepAug(YImp, XHat, P, PLag, A, R_prior=None, R_prior_weight=0.0):
         R_prior = np.zeros(2*[N])
     RNew = 1.0/float(T + R_prior_weight) * (np.dot(YImp, YImp.T) \
                                             - np.dot(OmegaNew, np.dot(XHat[0:nLF, :], YImp.T)) \
-                                            + R_prior)
+                                            + (R_prior_weight - N - 2) * R_prior)
 
     # State noise covariance
     QNew = 1.0/(T-1.0) * np.sum([p - np.dot(A, pl.T) - np.dot(pl, A.T) + np.dot(A, np.dot(p_prev, A.T))

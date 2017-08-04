@@ -185,8 +185,8 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
         #    print "\tsigma_filt[%i] is not positive semidefinite"%t
         #    printedPosSemidefErr = True
         # Make sure filtered covariance is symmetric (with REALLY loose tolerance...)
-        if np.allclose(sigma_filt[t], sigma_filt[t].T, rtol=1e-4) == False:
-            print "\tsigma_filt[%i] is not symmetric..."%t
+        #if np.allclose(sigma_filt[t], sigma_filt[t].T, rtol=1e-4) == False:
+        #    print "\tsigma_filt[%i] is not symmetric..."%t
 
     # sigma_t|T, mu_t|T
     sigma_smooth = np.zeros((T, nLF, nLF))
@@ -233,7 +233,7 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     return mu_smooth.T, sigma_smooth, sigmaLag_smooth, YImp, sigma_filt
 
 ##### M step of SSM EM algorithm
-def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
+def mStep(YImp, XHat, P, PLag):
     """
     Estimates SSM parameters given state and covariance estimates.
 
@@ -246,7 +246,12 @@ def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
         Covariance estimate: E[x_t x_t^T | y]
     -PLag: T-1 x nLF x nLF
         Lagged covariance estimate: E[x_t x_{t-1}^T | y]
-    -A, C, Q, R: providing a value for one of these fixes the parameter so it won't be estimated
+    -R_prior: N x N
+        An inverse Wishart prior can be specified for R. This matrix is the matrix parameter in that
+        distribution.
+    -R_prior_weight
+        The scalar parameter in the inverse Wishart prior. Should be something like N + T_s + 1, where T_s is
+        the number of observations used to find the prior from summer data.
 
     Returns
     -Estimates for A, C, Q, R, pi0 and sigma0
@@ -257,7 +262,7 @@ def mStep(YImp, XHat, P, PLag, A=None, C=None, Q=None, R=None):
     CNew = np.dot(np.dot(YImp, XHat.T), np.linalg.pinv(np.sum(P, axis=0))) if C is None else C
 
     # Observation noise covariance
-    RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(CNew, np.dot(XHat, YImp.T))) if R is None else R
+    RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(CNew, np.dot(XHat, YImp.T)))
 
     # State transition matrix
     ANew = np.dot(np.sum(PLag, axis=0), np.linalg.pinv(np.sum(P[0:-1], axis=0))) if A is None else A
@@ -324,7 +329,7 @@ def ssmEM(Y, nLF, maxIt=50):
 
 ##### SSM EM with state augmented by velocity
 
-def mStepAug(YImp, XHat, P, PLag, A):
+def mStepAug(YImp, XHat, P, PLag, A, R_prior=None, R_prior_weight=0.0):
     """
     Estimates SSM parameters given state and covariance estimates.
 
@@ -337,7 +342,12 @@ def mStepAug(YImp, XHat, P, PLag, A):
         Covariance estimate: E[x_t x_t^T | y]
     -PLag: T-1 x nLF x nLF
         Lagged covariance estimate: E[x_t x_{t-1}^T | y]
-    -A, C, Q, R: providing a value for one of these fixes the parameter so it won't be estimated
+    -R_prior: N x N
+        An inverse Wishart prior can be specified for R. This matrix is the matrix parameter in that
+        distribution.
+    -R_prior_weight
+        The scalar parameter in the inverse Wishart prior. Should be something like N + T_s + 1, where T_s is
+        the number of observations used to find the prior from summer data.
 
     Returns
     -Estimates for A, C, Q, R, pi0 and sigma0
@@ -349,16 +359,15 @@ def mStepAug(YImp, XHat, P, PLag, A):
     OmegaNew = np.dot(np.dot(YImp, XHat[0:nLF,:].T), np.linalg.pinv(np.sum(P[:, 0:nLF, 0:nLF], axis=0)))
 
     # Observation noise covariance
-    RNew = 1.0/float(T) * (np.dot(YImp, YImp.T) - np.dot(OmegaNew, np.dot(XHat[0:nLF, :], YImp.T)))
+    if R_prior is None:
+        R_prior = np.zeros(2*[N])
+    RNew = 1.0/float(T + R_prior_weight) * (np.dot(YImp, YImp.T) \
+                                            - np.dot(OmegaNew, np.dot(XHat[0:nLF, :], YImp.T)) \
+                                            + R_prior)
 
     # State noise covariance
-    #QNew = 1.0/float(T-1) * (np.sum(P[1:], axis=0) - np.dot(A, np.sum(np.transpose(PLag, axes=(0, 2, 1)),
-    #                                                                            axis=0)))
     QNew = 1.0/(T-1.0) * np.sum([p - np.dot(A, pl.T) - np.dot(pl, A.T) + np.dot(A, np.dot(p_prev, A.T))
                                                     for p, pl, p_prev in zip(P[1:], PLag, P[:-1])], axis=0)
-    #print P[1]
-    #print PLag[1]
-    #print "Q eigenvalues: ", np.linalg.eig(QNew)[0]
 
     # Initial state mean
     pi0New = XHat[:, 0]
@@ -419,7 +428,7 @@ def kfSetupAug(Y, C, XHat, nLF, tVar=10):
 
     return pi0, sigma0, Q, R
 
-def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
+def ssmEMAug(Y, nLF, maxIt=50, dt=0.25, R_prior=None, R_prior_weight=0.0):
     """
     Runs state space EM algorithm
 
@@ -441,6 +450,9 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
     # Estimate SSM parameters with PCA, using EM to handle missing values
     _, C, pcaXHat = pcaEstMDAug(Y, nLF, maxIt=50)
     pi0, sigma0, Q, R = kfSetupAug(Y, C, pcaXHat, nLF)
+    # If a prior was provided for R, use that instead
+    if not (R_prior is None):
+        R = R_prior
 
     # Keep track of hidden state mean and covariance
     XHat = None
@@ -462,7 +474,7 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25):
             PLag[t, :, :] = sigmaLag_smooth[t, :, :] + np.outer(XHat[:, t+1], XHat[:, t].T)
 
         ##### M step
-        Omega, Q, R, pi0, sigma0 = mStepAug(YImp, XHat, P, PLag, A)
+        Omega, Q, R, pi0, sigma0 = mStepAug(YImp, XHat, P, PLag, A, R_prior, R_prior_weight)
         C = np.asarray(np.bmat([Omega, np.zeros((N, nLF))]))
 
     # Finally, re-estimate hidden state    

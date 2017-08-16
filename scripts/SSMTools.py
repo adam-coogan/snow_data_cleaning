@@ -162,7 +162,7 @@ def kalmanSmooth(Y, pi0, sigma0, A, C, Q, R, nLF):
     mu_pred = np.zeros([T-1, nLF])
 
     # Avoid printing repetitive errors
-    printedPosSemidefErr = False
+    #printedPosSemidefErr = False
 
     # Filtering step
     for t in range(1, T):
@@ -477,6 +477,8 @@ def ssmEMAug(Y, nLF, maxIt=50, dt=0.25, R_prior=None, R_prior_weight=0.0):
     return XHat, sigma_smooth, A, C, Q, R, pi0, sigma0, sigma_filt
 
 ### Log likelihood
+# TODO: this isn't really the log likelihood... It ignores the |R|, |Q| terms. Should really compute observed
+# log likelihood by marginalizing over {x_t}_{t=1}^T
 def logL(X, Y, pi0, sigma0, A, C, Q, R):
     logLs = np.zeros(Y.shape[1])
 

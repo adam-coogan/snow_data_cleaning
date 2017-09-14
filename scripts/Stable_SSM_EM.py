@@ -62,6 +62,7 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
         ### Update step
         kf.C = C.copy()
+        kf.D = D.copy()
         kf.R = R.copy()
 
         # Need to change observation, observation control and observation noise matrices if observation is
@@ -75,6 +76,7 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
             # Modify parameters
             kf.C[nan_sensors, :] = 0.0
+            kf.D[nan_sensors, :] = 0.0
             kf.R[nan_sensors, :] = 0.0
             kf.R[:, nan_sensors] = 0.0
             kf.R[nan_sensors, nan_sensors] = 1.0

@@ -53,16 +53,33 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
     # Filtering step
     for t in range(1, T):
+        ### Prediction step
         kf.predict(U[:, t])
 
         # Save mu_t|t-1 and sigma_t|t-1
         sigma_pred[t-1, :, :] = kf.sigma
         mu_pred[t-1] = kf.mu
 
-        # Update if we have a measurement. Nans are handled by Kalman.
-        # TODO: FIGURE OUT HOW TO HANDLE THIS WITH MULTIPLE SENSORS! THIS IS A VERY KEY ISSUE!!!
-        if not np.isnan(Y[:, t]).any():
-            kf.update(Y[:, t], V[:, t])
+        ### Update step
+        kf.C = C.copy()
+        kf.R = R.copy()
+
+        # Need to change observation, observation control and observation noise matrices if observation is
+        # incomplete! See Shumway and Stoffer page 314.
+        # First, figure out which sensors don't have observations:
+        nan_sensors = np.where(np.isnan(Y[:, t]))[0]
+        # If some observations were present, go through with the update step
+        if nan_sensors.size < N:
+            # Zero those observations
+            y_t = np.nan_to_num(Y[:, t])
+
+            # Modify parameters
+            kf.C[nan_sensors, :] = 0.0
+            kf.R[nan_sensors, :] = 0.0
+            kf.R[:, nan_sensors] = 0.0
+            kf.R[nan_sensors, nan_sensors] = 1.0
+
+            kf.update(y_t, V[:, t])
 
         # Save filtered mean, covariance
         sigma_filt[t, :, :] = kf.sigma

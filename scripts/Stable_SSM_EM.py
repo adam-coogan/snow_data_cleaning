@@ -99,6 +99,7 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
     # Lagged covariance. Indexed by t-1.
     sigma_lag_smooth = np.zeros((T-1, n_LF, n_LF))
     # sigmaLag_{T,T-1} = (1 - K_T C) A V_{T-1|T-1}, where K_T is Kalman gain at last timestep.
+    # TODO: unclear what to do here if last observation contains missing components
     K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T, np.linalg.pinv(np.dot(kf.C, \
                                                                     np.dot(sigma_pred[-1], kf.C.T)) + kf.R)))
     sigma_lag_smooth[-1] = np.dot(np.dot((np.identity(n_LF) - np.dot(K_T, kf.C)), kf.A), sigma_filt[-2])
@@ -132,7 +133,8 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
 ##### M step of SSM EM algorithm
 # Takes Q = I, R diagonal. TODO: set eigenvalues of A <= 1!
-def m_step_stable(Y_imp, U, V, X_hat, P, P_lag):
+def m_step_stable(Y, Y_imp, U, V, X_hat, sigma_smooth, P, P_lag, A_old, B_old, C_old, D_old, Q_old, R_old,
+        pi0_old, sigma0_old):
     """
     Estimates SSM parameters given state and covariance estimates.
 
@@ -158,6 +160,8 @@ def m_step_stable(Y_imp, U, V, X_hat, P, P_lag):
     L = U.shape[0]
     M = V.shape[0]
 
+    nan_sensors, nan_times = np.where(np.isnan(Y))
+
     ##### Find A and B
     # Simultaneously solve for state transition matrix and control transition matrix
     inv_sum_uu = np.linalg.pinv(np.dot(U[:, 1:], U.T[1:, :])) # [sum_{t=2}^T u_t u_t^T]^-1
@@ -176,27 +180,42 @@ def m_step_stable(Y_imp, U, V, X_hat, P, P_lag):
     A_new = x_AB[:, 0:n_LF]
     B_new = x_AB[:, n_LF:]
 
-    ##### Find C and D
-    # Observation matrix and control observation matrix
-    inv_sum_P = np.linalg.pinv(sum_P_T_1 + P[-1, :, :])
-    inv_sum_vv = np.linalg.pinv(np.dot(V, V.T)) # [sum_{t=1}^T v_t v_t^T]^-1
-    sum_x_v = np.dot(X_hat, V.T)
-    sum_y_v = np.dot(Y_imp, V.T) # sum_{t=1}^T y_t v_t^T
-    sum_y_x = np.dot(Y_imp, X_hat.T) # sum_{t=1}^T y_t x_t^T
+    # Need these expectation values to handle missing observations
+    E_y = Y_imp.copy()
 
-    # Construct system to solve
+    E_y_x = np.einsum("it,jt->tij", Y, X_hat)
+    E_y_x_unobs = np.einsum("ij,tjk->tik", C_old, P) + np.einsum("it,jt->tij", np.dot(D_old, V), X_hat)
+    E_y_x[nan_times, nan_sensors, :] = E_y_x_unobs[nan_times, nan_sensors, :]
+
+    E_y_y_diag = np.einsum("it,it->it", Y, Y)
+    E_y_y_diag_unobs = np.square(np.dot(C_old, X_hat) + np.dot(D_old, V)) \
+            + np.einsum("ij,tjk,ik->it", C_old, sigma_smooth, C_old) + R_old.diagonal().reshape(-1, 1)
+    E_y_y_diag[nan_sensors, nan_times] = E_y_y_diag_unobs[nan_sensors, nan_times]
+
+    ##### Find C and D
+    sum_x_v = np.dot(X_hat, V.T)
+    inv_sum_vv = np.linalg.pinv(np.dot(V, V.T))
+    inv_sum_P = np.linalg.pinv(np.sum(P, axis=0))
+
     A_CD = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_v, inv_sum_vv)],
                                 [np.dot(sum_x_v.T, inv_sum_P), np.identity(M)]]))
-    b_CD = np.asarray(np.bmat([np.dot(sum_y_x, inv_sum_P), np.dot(sum_y_v, inv_sum_vv)]))
+    b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x, axis=0), inv_sum_P),
+        np.dot(np.dot(E_y, V.T), inv_sum_vv)]))
     x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
+
     # Extract A and B
     C_new = x_CD[:, 0:n_LF]
     D_new = x_CD[:, n_LF:]
+    #print C_new
+    #print D_new
 
     ##### Compute R
-    y_Dv = Y_imp - np.dot(D_new, V)
-    y_residual = y_Dv - np.dot(C_new, X_hat)
-    R_new = np.diag(np.sum(y_residual * y_Dv, axis=1)) / float(T)
+    R_new = np.diag((np.sum(E_y_y_diag, axis=1) \
+            + np.sum(np.einsum("ij,tjk,ik->it", C_new, P, C_new), axis=1) \
+            + np.sum(np.square(np.dot(D_new, V)), axis=1) \
+            - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x, C_new), axis=1) \
+            - 2.0 * np.einsum("it,it->i", np.dot(D_new, V), E_y) \
+            + 2.0 * np.einsum("it,it->i", np.dot(C_new, X_hat), np.dot(D_new, V))) / float(T))
 
     # Initial state mean
     pi0_new = X_hat[:, 0]
@@ -300,8 +319,6 @@ def ssm_setup(Y, U, V, C, X, n_LF):
         Hidden state transition matrix (A)
     -n_LF x L
         B
-    -N x M
-        D
     -n_LF x n_LF numpy array
         Hidden state noise estimate (Q)
     -N x N numpy array
@@ -312,24 +329,24 @@ def ssm_setup(Y, U, V, C, X, n_LF):
         Initial hidden state covariance estimate (sigma0)
     """
     N, T = Y.shape
+
     # Estimate A by regressing state onto its lag
     clf = linear_model.LinearRegression()
     clf.fit(X[:, 0:-1].T, X[:, 1:].T)
     A = clf.coef_
 
-    # Estimate state variance from fit tVar observations
     Q = np.identity(n_LF)
 
     # Estimate observation variance. Initial guess shouldn't matter too much...
-    obs_var = np.nanmean(np.nanvar(Y - np.dot(C, X), axis=1, ddof=1))
-    R = np.diag(N*[obs_var if obs_var != 0 else 1.0])
+    #obs_var = np.nanmean(np.nanvar(Y - np.dot(C, X), axis=1, ddof=1))
+    R = np.identity(N) #np.diag(N*[obs_var if obs_var != 0 else 1.0])
 
     pi0 = X[:, 0].copy().T
     sigma0 = Q
 
-    return A, np.zeros([n_LF, U.shape[0]]), np.zeros([N, V.shape[0]]), Q, R, pi0, sigma0
+    return A, np.zeros([n_LF, U.shape[0]]), Q, R, pi0, sigma0
 
-def ssm_em_stable(Y, U, V, n_LF, max_it):
+def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
     """
     Runs state space EM algorithm
 
@@ -344,11 +361,14 @@ def ssm_em_stable(Y, U, V, n_LF, max_it):
     """
     N, T = Y.shape
 
-    # Estimate SSM parameters with PCA, using EM to handle missing values
-    C, X_PCA, Y_imp = pca_est_MD(Y, n_LF, max_it)
+    # Estimate SSM parameters with PCA, using EM to handle missing values. First, shift the time series:
+    Y_mean = np.nanmean(Y, axis=1).reshape(-1, 1)
+    C, X_PCA, Y_imp = pca_est_MD(Y - Y_mean, n_LF, pca_max_it)
 
     # Use PCA results to set up the SSM
-    A, B, D, Q, R, pi0, sigma0 = ssm_setup(Y_imp, U, V, C, X_PCA, n_LF)
+    A, B, Q, R, pi0, sigma0 = ssm_setup(Y_imp + Y_mean, U, V, C, X_PCA, n_LF)
+
+    D = Y_mean.reshape([N, V.shape[0]])
 
     # Keep track of hidden state mean and covariance
     X_hat = None
@@ -371,7 +391,8 @@ def ssm_em_stable(Y, U, V, n_LF, max_it):
             P_lag[t, :, :] = sigma_lag_smooth[t, :, :] + np.outer(X_hat[:, t+1], X_hat[:, t].T)
 
         ##### M step
-        A, B, C, D, Q, R, pi0, sigma0 = m_step_stable(Y_imp, U, V, X_hat, P, P_lag)
+        A, B, C, D, Q, R, pi0, sigma0 = m_step_stable(Y, Y_imp, U, V, X_hat, sigma_smooth, P, P_lag, A, B, C,
+                D, Q, R, pi0, sigma0)
 
     # Finally, re-estimate hidden state
     # TODO: should I use Y_imp here?

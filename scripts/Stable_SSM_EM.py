@@ -181,6 +181,7 @@ def m_step_stable(Y, Y_imp, U, V, X_hat, sigma_smooth, P, P_lag, A_old, B_old, C
     B_new = x_AB[:, n_LF:]
 
     # Need these expectation values to handle missing observations
+    # TODO: move to e-step method
     E_y = Y_imp.copy()
 
     E_y_x = np.einsum("it,jt->tij", Y, X_hat)
@@ -206,8 +207,6 @@ def m_step_stable(Y, Y_imp, U, V, X_hat, sigma_smooth, P, P_lag, A_old, B_old, C
     # Extract A and B
     C_new = x_CD[:, 0:n_LF]
     D_new = x_CD[:, n_LF:]
-    #print C_new
-    #print D_new
 
     ##### Compute R
     R_new = np.diag((np.sum(E_y_y_diag, axis=1) \
@@ -319,6 +318,8 @@ def ssm_setup(Y, U, V, C, X, n_LF):
         Hidden state transition matrix (A)
     -n_LF x L
         B
+    -n_LF x M
+        D
     -n_LF x n_LF numpy array
         Hidden state noise estimate (Q)
     -N x N numpy array
@@ -344,7 +345,7 @@ def ssm_setup(Y, U, V, C, X, n_LF):
     pi0 = X[:, 0].copy().T
     sigma0 = Q
 
-    return A, np.zeros([n_LF, U.shape[0]]), Q, R, pi0, sigma0
+    return A, np.zeros([n_LF, U.shape[0]]), np.zeros([N, V.shape[0]]), Q, R, pi0, sigma0
 
 def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
     """
@@ -362,13 +363,10 @@ def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
     N, T = Y.shape
 
     # Estimate SSM parameters with PCA, using EM to handle missing values. First, shift the time series:
-    Y_mean = np.nanmean(Y, axis=1).reshape(-1, 1)
-    C, X_PCA, Y_imp = pca_est_MD(Y - Y_mean, n_LF, pca_max_it)
+    C, X_PCA, Y_imp = pca_est_MD(Y, n_LF, pca_max_it)
 
     # Use PCA results to set up the SSM
-    A, B, Q, R, pi0, sigma0 = ssm_setup(Y_imp + Y_mean, U, V, C, X_PCA, n_LF)
-
-    D = Y_mean.reshape([N, V.shape[0]])
+    A, B, D, Q, R, pi0, sigma0 = ssm_setup(Y_imp, U, V, C, X_PCA, n_LF)
 
     # Keep track of hidden state mean and covariance
     X_hat = None

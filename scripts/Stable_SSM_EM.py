@@ -198,13 +198,18 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
 
     for s_idx, s in enumerate(s_list):
         ##### Find A and B
+        # Find {t | t >= 2 and s_t = s}
+        s_t2 = np.where(ss == s)[0]
+        if s_t2[0] == 0: # enforce t > 1!
+            s_t2 = s_t2[1:]
+
         # Simultaneously solve for state transition matrix and control transition matrix
-        inv_sum_uu = np.linalg.pinv(np.dot(U[:, 1:], U.T[1:, :])) # [sum_{t=2}^T u_t u_t^T]^-1
-        sum_P_T_1 = np.sum(P[0:-1, :, :], axis=0) # sum_{t=2}^T P_{t-1} = sum_{t=1}^{T-1} P_t
+        inv_sum_uu = np.linalg.pinv(np.dot(U[:, s_t2], U.T[s_t2, :])) # [sum_{t=2}^T u_t u_t^T]^-1
+        sum_P_T_1 = np.sum(P[s_t2 - 1, :, :], axis=0) # sum_{t=2}^T P_{t-1} = sum_{t=1}^{T-1} P_t
         inv_sum_P_T_1 = np.linalg.pinv(sum_P_T_1)
-        sum_x_u = np.dot(X_hat[:, 1:], U.T[1:, :]) # sum_{t=2}^T x_t u_t^T
-        sum_x_1_u = np.dot(X_hat[:, 0:-1], U.T[1:, :]) # sum_{t=2}^T x_{t-1} u_t^T
-        sum_P_lag = np.sum(P_lag, axis=0) # sum_{t=2}^T P_{t,t-1}
+        sum_x_u = np.dot(X_hat[:, s_t2], U.T[s_t2, :]) # sum_{t=2}^T x_t u_t^T
+        sum_x_1_u = np.dot(X_hat[:, s_t2 - 1], U.T[s_t2, :]) # sum_{t=2}^T x_{t-1} u_t^T
+        sum_P_lag = np.sum(P_lag[s_t2 - 1, :, :], axis=0) # sum_{t=2}^T P_{t,t-1}
 
         # Construct system to solve
         A_AB = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_1_u, inv_sum_uu)],
@@ -216,14 +221,16 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
         B_news[s_idx, :, :] = x_AB[:, n_LF:]
 
         ##### Find C and D
-        sum_x_v = np.dot(X_hat, V.T)
-        inv_sum_vv = np.linalg.pinv(np.dot(V, V.T))
-        inv_sum_P = np.linalg.pinv(np.sum(P, axis=0))
+        # Find {t | s_t = s}
+        s_t = np.where(ss == s)[0]
+        sum_x_v = np.dot(X_hat[:, s_t], V[:, s_t].T)
+        inv_sum_vv = np.linalg.pinv(np.dot(V[:, s_t], V[:, s_t].T))
+        inv_sum_P = np.linalg.pinv(np.sum(P[s_t, :, :], axis=0))
 
         A_CD = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_v, inv_sum_vv)],
                                     [np.dot(sum_x_v.T, inv_sum_P), np.identity(M)]]))
-        b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x, axis=0), inv_sum_P),
-            np.dot(np.dot(E_y, V.T), inv_sum_vv)]))
+        b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x[s_t, :, :], axis=0), inv_sum_P),
+            np.dot(np.dot(E_y[:, s_t], V.T), inv_sum_vv)]))
         x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
 
         # Extract A and B
@@ -231,13 +238,14 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
         D_news[s_idx, :, :] = x_CD[:, n_LF:]
 
         ##### Compute R
-        R_news[s_idx, :, :] = np.diag((np.sum(E_y_y_diag, axis=1) \
-                + np.sum(np.einsum("ij,tjk,ik->it", C_news[s_idx, :, :], P, C_news[s_idx, :, :]), axis=1) \
-                + np.sum(np.square(np.dot(D_news[s_idx, :, :], V)), axis=1) \
-                - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x, C_news[s_idx, :, :]), axis=1) \
-                - 2.0 * np.einsum("it,it->i", np.dot(D_news[s_idx, :, :], V), E_y) \
-                + 2.0 * np.einsum("it,it->i", np.dot(C_news[s_idx, :, :], X_hat),
-                    np.dot(D_news[s_idx, :, :], V))) / float(T))
+        R_news[s_idx, :, :] = np.diag((np.sum(E_y_y_diag[:, s_t], axis=1)
+                + np.sum(np.einsum("ij,tjk,ik->it", C_news[s_idx, :, :], P[s_t, :, :], C_news[s_idx, :, :]),
+                    axis=1)
+                + np.sum(np.square(np.dot(D_news[s_idx, :, :], V[:, s_t])), axis=1)
+                - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x[s_t, :, :], C_news[s_idx, :, :]), axis=1)
+                - 2.0 * np.einsum("it,it->i", np.dot(D_news[s_idx, :, :], V), E_y[:, s_t])
+                + 2.0 * np.einsum("it,it->i", np.dot(C_news[s_idx, :, :], X_hat[:, s_t]),
+                    np.dot(D_news[s_idx, :, :], V[:, s_t]))) / float(T))
 
     # Initial state mean
     pi0_new = X_hat[:, 0]
@@ -247,8 +255,6 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
 
     return pi0_new, sigma0_new, A_news, B_news, C_news, D_news, np.array([np.identity(n_LF)] * len(s_list)), \
             R_news
-    #return pi0_new, sigma0_new, np.array([A_new]), np.array([B_new]), np.array([C_new]), np.array([D_new]), \
-    #        np.array([np.identity(n_LF)]), np.array([R_new])
 
 ##### Initialization functions
 def pca_est(Y, n_LF):

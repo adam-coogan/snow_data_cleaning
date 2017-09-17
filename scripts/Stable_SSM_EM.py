@@ -179,7 +179,7 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
 
     E_y_x = np.einsum("it,jt->tij", Y, X_hat)
     E_y_x_unobs = np.einsum("tij,tjk->tik", C_olds[ss], P) \
-            + np.einsum("tij,jt,kt->tik", D_olds, V, X_hat)
+            + np.einsum("tij,jt,kt->tik", D_olds[ss], V, X_hat)
     E_y_x[nan_times, nan_sensors, :] = E_y_x_unobs[nan_times, nan_sensors, :]
 
     E_y_y_diag = np.einsum("it,it->it", Y, Y)
@@ -230,7 +230,7 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
         A_CD = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_v, inv_sum_vv)],
                                     [np.dot(sum_x_v.T, inv_sum_P), np.identity(M)]]))
         b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x[s_t, :, :], axis=0), inv_sum_P),
-            np.dot(np.dot(E_y[:, s_t], V.T), inv_sum_vv)]))
+            np.dot(np.dot(E_y[:, s_t], V[:, s_t].T), inv_sum_vv)]))
         x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
 
         # Extract A and B
@@ -243,7 +243,7 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
                     axis=1)
                 + np.sum(np.square(np.dot(D_news[s_idx, :, :], V[:, s_t])), axis=1)
                 - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x[s_t, :, :], C_news[s_idx, :, :]), axis=1)
-                - 2.0 * np.einsum("it,it->i", np.dot(D_news[s_idx, :, :], V), E_y[:, s_t])
+                - 2.0 * np.einsum("it,it->i", np.dot(D_news[s_idx, :, :], V[:, s_t]), E_y[:, s_t])
                 + 2.0 * np.einsum("it,it->i", np.dot(C_news[s_idx, :, :], X_hat[:, s_t]),
                     np.dot(D_news[s_idx, :, :], V[:, s_t]))) / float(T))
 
@@ -377,7 +377,7 @@ def ssm_setup(Y, U, V, C, X, n_LF):
     pi0 = X[:, 0].copy().T
     sigma0 = Q
 
-    return A, np.zeros([n_LF, U.shape[0]]), np.zeros([N, V.shape[0]]), Q, R, pi0, sigma0
+    return A, np.ones([n_LF, U.shape[0]]), np.ones([N, V.shape[0]]), Q, R, pi0, sigma0
 
 def ssm_em_stable(Y, U, V, ss, s_list, n_LF, max_it, pca_max_it=50):
     """

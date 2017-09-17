@@ -1,0 +1,29 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry} 
+\usepackage{amsmath,amsthm,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+ 
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand\nlf{n_{\rm LF}}
+ 
+\begin{document}
+ 
+\title{EM for State Space Models with Missing Data}
+\author{Adam Coogan}
+\maketitle
+
+\section{Model}
+
+The state space model (SSM) has the form
+\begin{align}
+    \vec{x}_t &= A_t \vec{x}_{t-1} + B_t \vec{u}_t + \vec{\varepsilon}_t\\
+    \vec{y}_t &= C_t \vec{x}_t + D_t \vec{v}_t + \vec{\delta}_t,
+\end{align}
+where $\vec{u}_t$ and $\vec{v}_t$ are the state transition and observation controls and $\vec{\varepsilon}_t \sim N(0, Q_t)$ and $\vec{\delta}_t \sim N(0, R_t)$. The dimensions of the vectors $\vec{x}_t$ ,$\vec{y}_t$, $\vec{u}_t$, $\vec{v}_t$ are $\nlf$, $N$, $L$ and $M$. $T$ denotes the number of observations and $\mathcal{D}$ the set of obserations.
+
+In our scenario, $N > \nlf$, and the hidden state $\vec{x}_t$ does not have an obvious physical interpretation. This means we need to learn the parameters of the model $\theta = {A, B, C, D, Q, R}$. To improve numerical stability, I set $Q = I$ and take $R$ to be diagonal.
+
+\end{document}
+
+

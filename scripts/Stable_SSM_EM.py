@@ -144,7 +144,7 @@ def kalman_smooth(Y, U, V, ss, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs):
 
 ##### M step of SSM EM algorithm
 # Takes Q = I, R diagonal. TODO: set eigenvalues of A <= 1!
-def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0_old, sigma0_old, A_olds,
+def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0_olds, sigma0_olds, A_olds,
         B_olds, C_olds, D_olds, Q_olds, R_olds):
     """
     Estimates SSM parameters given state and covariance estimates.
@@ -173,18 +173,13 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
 
     nan_sensors, nan_times = np.where(np.isnan(Y))
 
-    A_news = []
-    B_news = []
-    C_news = []
-    D_news = []
-    R_news = []
-
     # Need these expectation values to handle missing observations
     # TODO: move to e-step method
     E_y = Y_imp.copy()
 
     E_y_x = np.einsum("it,jt->tij", Y, X_hat)
-    E_y_x_unobs = np.einsum("tij,tjk->tik", C_olds[ss], P) + np.einsum("tij,jt,kt->tik", D_olds[ss], V, X_hat)
+    E_y_x_unobs = np.einsum("tij,tjk->tik", C_olds[ss], P) \
+            + np.einsum("tij,jt,kt->tik", D_olds, V, X_hat)
     E_y_x[nan_times, nan_sensors, :] = E_y_x_unobs[nan_times, nan_sensors, :]
 
     E_y_y_diag = np.einsum("it,it->it", Y, Y)
@@ -194,46 +189,55 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
             + np.einsum("tii->it", R_olds[ss])
     E_y_y_diag[nan_sensors, nan_times] = E_y_y_diag_unobs[nan_sensors, nan_times]
 
-    ##### Find A and B
-    # Simultaneously solve for state transition matrix and control transition matrix
-    inv_sum_uu = np.linalg.pinv(np.dot(U[:, 1:], U.T[1:, :])) # [sum_{t=2}^T u_t u_t^T]^-1
-    sum_P_T_1 = np.sum(P[0:-1, :, :], axis=0) # sum_{t=2}^T P_{t-1} = sum_{t=1}^{T-1} P_t
-    inv_sum_P_T_1 = np.linalg.pinv(sum_P_T_1)
-    sum_x_u = np.dot(X_hat[:, 1:], U.T[1:, :]) # sum_{t=2}^T x_t u_t^T
-    sum_x_1_u = np.dot(X_hat[:, 0:-1], U.T[1:, :]) # sum_{t=2}^T x_{t-1} u_t^T
-    sum_P_lag = np.sum(P_lag, axis=0) # sum_{t=2}^T P_{t,t-1}
+    # Make new parameters for each possible value of the switching state
+    A_news = np.zeros([len(s_list)] + list(A_olds[0].shape))
+    B_news = np.zeros([len(s_list)] + list(B_olds[0].shape))
+    C_news = np.zeros([len(s_list)] + list(C_olds[0].shape))
+    D_news = np.zeros([len(s_list)] + list(D_olds[0].shape))
+    R_news = np.zeros([len(s_list)] + list(R_olds[0].shape))
 
-    # Construct system to solve
-    A_AB = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_1_u, inv_sum_uu)],
-                                [np.dot(sum_x_1_u.T, inv_sum_P_T_1), np.identity(L)]]))
-    b_AB = np.asarray(np.bmat([np.dot(sum_P_lag, inv_sum_P_T_1), np.dot(sum_x_u, inv_sum_uu)]))
-    x_AB = np.linalg.solve(A_AB.T, b_AB.T).T
-    # Extract A and B
-    A_news.append(x_AB[:, 0:n_LF])
-    B_news.append(x_AB[:, n_LF:])
+    for s_idx, s in enumerate(s_list):
+        ##### Find A and B
+        # Simultaneously solve for state transition matrix and control transition matrix
+        inv_sum_uu = np.linalg.pinv(np.dot(U[:, 1:], U.T[1:, :])) # [sum_{t=2}^T u_t u_t^T]^-1
+        sum_P_T_1 = np.sum(P[0:-1, :, :], axis=0) # sum_{t=2}^T P_{t-1} = sum_{t=1}^{T-1} P_t
+        inv_sum_P_T_1 = np.linalg.pinv(sum_P_T_1)
+        sum_x_u = np.dot(X_hat[:, 1:], U.T[1:, :]) # sum_{t=2}^T x_t u_t^T
+        sum_x_1_u = np.dot(X_hat[:, 0:-1], U.T[1:, :]) # sum_{t=2}^T x_{t-1} u_t^T
+        sum_P_lag = np.sum(P_lag, axis=0) # sum_{t=2}^T P_{t,t-1}
 
-    ##### Find C and D
-    sum_x_v = np.dot(X_hat, V.T)
-    inv_sum_vv = np.linalg.pinv(np.dot(V, V.T))
-    inv_sum_P = np.linalg.pinv(np.sum(P, axis=0))
+        # Construct system to solve
+        A_AB = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_1_u, inv_sum_uu)],
+                                    [np.dot(sum_x_1_u.T, inv_sum_P_T_1), np.identity(L)]]))
+        b_AB = np.asarray(np.bmat([np.dot(sum_P_lag, inv_sum_P_T_1), np.dot(sum_x_u, inv_sum_uu)]))
+        x_AB = np.linalg.solve(A_AB.T, b_AB.T).T
+        # Extract A and B
+        A_news[s_idx, :, :] = x_AB[:, 0:n_LF]
+        B_news[s_idx, :, :] = x_AB[:, n_LF:]
 
-    A_CD = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_v, inv_sum_vv)],
-                                [np.dot(sum_x_v.T, inv_sum_P), np.identity(M)]]))
-    b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x, axis=0), inv_sum_P),
-        np.dot(np.dot(E_y, V.T), inv_sum_vv)]))
-    x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
+        ##### Find C and D
+        sum_x_v = np.dot(X_hat, V.T)
+        inv_sum_vv = np.linalg.pinv(np.dot(V, V.T))
+        inv_sum_P = np.linalg.pinv(np.sum(P, axis=0))
 
-    # Extract A and B
-    C_news.append(x_CD[:, 0:n_LF])
-    D_news.append(x_CD[:, n_LF:])
+        A_CD = np.asarray(np.bmat([[np.identity(n_LF), np.dot(sum_x_v, inv_sum_vv)],
+                                    [np.dot(sum_x_v.T, inv_sum_P), np.identity(M)]]))
+        b_CD = np.asarray(np.bmat([np.dot(np.sum(E_y_x, axis=0), inv_sum_P),
+            np.dot(np.dot(E_y, V.T), inv_sum_vv)]))
+        x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
 
-    ##### Compute R
-    R_news.append(np.diag((np.sum(E_y_y_diag, axis=1) \
-            + np.sum(np.einsum("ij,tjk,ik->it", C_news[-1], P, C_news[-1]), axis=1) \
-            + np.sum(np.square(np.dot(D_news[-1], V)), axis=1) \
-            - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x, C_news[-1]), axis=1) \
-            - 2.0 * np.einsum("it,it->i", np.dot(D_news[-1], V), E_y) \
-            + 2.0 * np.einsum("it,it->i", np.dot(C_news[-1], X_hat), np.dot(D_news[-1], V))) / float(T)))
+        # Extract A and B
+        C_news[s_idx, :, :] = x_CD[:, 0:n_LF]
+        D_news[s_idx, :, :] = x_CD[:, n_LF:]
+
+        ##### Compute R
+        R_news[s_idx, :, :] = np.diag((np.sum(E_y_y_diag, axis=1) \
+                + np.sum(np.einsum("ij,tjk,ik->it", C_news[s_idx, :, :], P, C_news[s_idx, :, :]), axis=1) \
+                + np.sum(np.square(np.dot(D_news[s_idx, :, :], V)), axis=1) \
+                - 2.0 * np.sum(np.einsum("tij,ij->it", E_y_x, C_news[s_idx, :, :]), axis=1) \
+                - 2.0 * np.einsum("it,it->i", np.dot(D_news[s_idx, :, :], V), E_y) \
+                + 2.0 * np.einsum("it,it->i", np.dot(C_news[s_idx, :, :], X_hat),
+                    np.dot(D_news[s_idx, :, :], V))) / float(T))
 
     # Initial state mean
     pi0_new = X_hat[:, 0]
@@ -241,8 +245,10 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
     # Initial state covariance
     sigma0_new = P[0, :, :] - np.outer(X_hat[:, 0], X_hat[:, 0].T)
 
-    return pi0_new, sigma0_new, np.asarray(A_news), np.asarray(B_news), np.asarray(C_news), \
-            np.asarray(D_news), np.asarray(np.identity(n_LF)), np.asarray(R_news)
+    return pi0_new, sigma0_new, A_news, B_news, C_news, D_news, np.array([np.identity(n_LF)] * len(s_list)), \
+            R_news
+    #return pi0_new, sigma0_new, np.array([A_new]), np.array([B_new]), np.array([C_new]), np.array([D_new]), \
+    #        np.array([np.identity(n_LF)]), np.array([R_new])
 
 ##### Initialization functions
 def pca_est(Y, n_LF):

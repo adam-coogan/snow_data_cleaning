@@ -84,7 +84,7 @@ class Kalman():
         self.state_labels = state_labels
         self.K = None
         
-    def predict(self, u=None, A=None): 
+    def predict(self, u=None): 
         ''' Predict step for the Kalman filter.  See Murphy Sec. 18.3.1.1
         
         Parameters
@@ -100,15 +100,19 @@ class Kalman():
         # Eventually, A might be some non-stationary matrix which depends on the present system state 
         # or external inputs such as temp/cloud-cover/etc.. 
         # if nan_mask is not None
-        if A is None: 
-            A = self.A
 
-        # Predicted state covariance 
-        self.sigma = np.dot(np.dot(A, self.sigma), self.A.T) + self.Q
+        # sigma_{t|t-1}
+        self.sigma = np.dot(np.dot(self.A, self.sigma), self.A.T) + self.Q
         # This is a bit of a hack. The better way to do this would be to use the eigendecomposition of sigma.
         self.sigma = 0.5 * (self.sigma + self.sigma.T)
 
-    def update(self, Y):
+        # mu_{t|t-1}
+        if u is None:
+            self.mu = np.dot(self.A, self.mu)
+        else:
+            self.mu = np.dot(self.A, self.mu) + np.dot(self.B, u)
+
+    def update(self, Y, v=None):
         '''
         Add a new measurement (z) to the Kalman filter. If z is None, nothing
         is changed.  Murphy Sec. 18.3.1.2
@@ -118,10 +122,13 @@ class Kalman():
         Y : np.array(dim_z)
             measurement for this update. z can be a scalar if dim_z is 1,
             otherwise it must be a column vector.
-
+        V: observation control
         '''
-        
-        self.y = np.dot(self.C,self.mu)#[0] # Posterior predictive mean 
+        # Posterior predictive mean 
+        if v is None:
+            self.y = np.dot(self.C, self.mu)
+        else:
+            self.y = np.dot(self.C, self.mu) + np.dot(self.D, v)
         
         r = np.asarray(Y - self.y) # residual 
         # If the residual is an NaN (observation invalid), set it to zero so there is no update
@@ -156,10 +163,8 @@ class Kalman():
         self.S = S 
 
         # Gaussian log-likeliehood 
-        loglikelihood = -len(r)/2.*np.log(2*np.pi)-np.log(det(S))/2.-np.dot(np.dot(r, S_inverse), r.T)/2.
-        #return np.sum(r**2)
-
-        return loglikelihood
+        #loglikelihood = -len(r)/2.*np.log(2*np.pi)-np.log(det(S))/2.-np.dot(np.dot(r, S_inverse), r.T)/2.
+        #return loglikelihood
 
 def EstimateObservationNoise(series, start_obs=2000, end_obs=3000):
     obs = series[start_obs:end_obs] 

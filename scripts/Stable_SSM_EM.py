@@ -8,7 +8,7 @@ from sklearn import linear_model
 
 ##### Kalman smoother
 
-def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
+def kalman_smooth(Y, U, V, ss, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs, n_LF):
     """
     Runs Kalman filtering and smoothing step of dynamic factor model estimator.
 
@@ -39,7 +39,8 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
     N, T = Y.shape
 
     # Initialize Kalman filter
-    kf = Kalman(mu_0=pi0.copy(), sigma_0=sigma0.copy(), A=A, B=B, C=C, D=D, Q=Q, R=R)
+    kf = Kalman(mu_0=pi0.copy(), sigma_0=sigma0.copy(), A=As[ss[0]], B=Bs[ss[0]], C=Cs[ss[0]], D=Ds[ss[0]],
+            Q=Qs[ss[0]], R=Rs[ss[0]])
 
     # sigma_t|t, mu_t|t
     sigma_filt = np.zeros([T, n_LF, n_LF])
@@ -53,17 +54,19 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
     # Filtering step
     for t in range(1, T):
+        kf.A = As[ss[t]].copy()
+        kf.B = Bs[ss[t]].copy()
+        kf.C = Cs[ss[t]].copy()
+        kf.D = Ds[ss[t]].copy()
+        kf.Q = Qs[ss[t]].copy()
+        kf.R = Rs[ss[t]].copy()
+
         ### Prediction step
         kf.predict(U[:, t])
 
         # Save mu_t|t-1 and sigma_t|t-1
         sigma_pred[t-1, :, :] = kf.sigma
         mu_pred[t-1] = kf.mu
-
-        ### Update step
-        kf.C = C.copy()
-        kf.D = D.copy()
-        kf.R = R.copy()
 
         # Need to change observation, observation control and observation noise matrices if observation is
         # incomplete! See Shumway and Stoffer page 314.
@@ -100,6 +103,9 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
     sigma_lag_smooth = np.zeros((T-1, n_LF, n_LF))
     # sigmaLag_{T,T-1} = (1 - K_T C) A V_{T-1|T-1}, where K_T is Kalman gain at last timestep.
     # TODO: unclear what to do here if last observation contains missing components
+    kf.A = As[ss[-1]].copy()
+    kf.C = Cs[ss[-1]].copy()
+    kf.R = Rs[ss[-1]].copy()
     K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T, np.linalg.pinv(np.dot(kf.C, \
                                                                     np.dot(sigma_pred[-1], kf.C.T)) + kf.R)))
     sigma_lag_smooth[-1] = np.dot(np.dot((np.identity(n_LF) - np.dot(K_T, kf.C)), kf.A), sigma_filt[-2])
@@ -109,6 +115,8 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
     # Smoothing step. Runs from t=T-1 to t=0.
     for t in range(T-2, -1, -1):
+        kf.A = As[ss[t]].copy()
+
         # Backward Kalman gain matrix
         J[t] = np.dot(np.dot(sigma_filt[t], kf.A.T), np.linalg.pinv(sigma_pred[t]))
 
@@ -120,14 +128,16 @@ def kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF):
 
     # Lagged smoothed covariance (NOT SYMMETRIC!)
     for t in range(T-3, -1, -1):
+        kf.A = As[ss[t]].copy()
+
         sigma_lag_smooth[t, :, :] = np.dot(sigma_filt[t+1], J[t].T) \
                     + np.dot(np.dot(J[t+1], (sigma_lag_smooth[t+1] - np.dot(kf.A, sigma_filt[t+1]))), J[t].T)
 
     # Fill in missing Y values
     Y_imp = Y.copy()
-    nanRows, nanCols = np.where(np.isnan(Y_imp))
-    for s, t in zip(nanRows, nanCols):
-        Y_imp[s, t] = np.dot(C[s, :], mu_smooth[t, :]) + np.dot(D[s, :], V[:, t])
+    nan_sensors, nan_times = np.where(np.isnan(Y_imp))
+    Y_imp[nan_sensors, nan_times] = (np.einsum("tij,tj->it", Cs[ss], mu_smooth) \
+            + np.einsum("tij,jt->it", Ds[ss], V))[nan_sensors, nan_times]
 
     return mu_smooth.T, sigma_smooth, sigma_lag_smooth, Y_imp, sigma_filt
 
@@ -347,7 +357,7 @@ def ssm_setup(Y, U, V, C, X, n_LF):
 
     return A, np.zeros([n_LF, U.shape[0]]), np.zeros([N, V.shape[0]]), Q, R, pi0, sigma0
 
-def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
+def ssm_em_stable(Y, U, V, ss, n_LF, max_it, pca_max_it=50):
     """
     Runs state space EM algorithm
 
@@ -375,8 +385,8 @@ def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
     for i in range(max_it):
         ##### E step
         # Estimate hidden state
-        X_hat, sigma_smooth, sigma_lag_smooth, Y_imp, sigma_filt = kalman_smooth(Y, U, V, pi0, sigma0, A,
-                B, C, D, Q, R, n_LF)
+        X_hat, sigma_smooth, sigma_lag_smooth, Y_imp, sigma_filt = kalman_smooth(Y, U, V, ss, pi0, sigma0, 
+                np.array([A]), np.array([B]), np.array([C]), np.array([D]), np.array([Q]), np.array([R]), n_LF)
 
         # Second moment
         P = np.zeros((T, n_LF, n_LF))
@@ -394,7 +404,8 @@ def ssm_em_stable(Y, U, V, n_LF, max_it, pca_max_it=50):
 
     # Finally, re-estimate hidden state
     # TODO: should I use Y_imp here?
-    X_hat, sigma_smooth, _, _, sigma_filt = kalman_smooth(Y, U, V, pi0, sigma0, A, B, C, D, Q, R, n_LF)
+    X_hat, sigma_smooth, _, _, sigma_filt = kalman_smooth(Y, U, V, ss, pi0, sigma0, np.array([A]),
+            np.array([B]), np.array([C]), np.array([D]), np.array([Q]), np.array([R]), n_LF)
 
     return X_hat, sigma_smooth, sigma_filt, A, B, C, D, Q, R, pi0, sigma0
 

@@ -1,0 +1,111 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry} 
+\usepackage{amsmath,amsthm,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+ 
+\DeclareMathOperator*{\argmax}{arg\,max}
+\newcommand\nlf{n_{\rm LF}}
+\newcommand\e{\mathbb{E}}
+ 
+\begin{document}
+ 
+\title{Expectation Maximization for State Space Models with Missing Data}
+\author{Adam Coogan}
+\maketitle
+
+\section{State Space Models}
+
+A general state space model (SSM) has the form
+\begin{align}
+    \vec{x}_t &= A_t \vec{x}_{t-1} + B_t \vec{u}_t + \vec{\varepsilon}_t\\
+    \vec{y}_t &= C_t \vec{x}_t + D_t \vec{v}_t + \vec{\delta}_t,
+\end{align}
+where $\vec{u}_t$ and $\vec{v}_t$ are the state transition and observation controls and $\vec{\varepsilon}_t \sim N(0, Q_t)$ and $\vec{\delta}_t \sim N(0, R_t)$. The dimensions of the vectors $\vec{x}_t$, $\vec{y}_t$, $\vec{u}_t$, $\vec{v}_t$ are $\nlf$, $N$, $L$ and $M$. $T$ denotes the number of observations and $\mathcal{D}$ the set of obserations.
+
+In our scenario, $N > \nlf$ (though the equations below apply regardless of this condition), and the hidden state $\vec{x}_t$ does not have an obvious physical interpretation. This means we need to learn the parameters of the model $\theta = {A, B, C, D, Q, R}$. To improve numerical stability, I set $Q = I$ and take $R$ to be diagonal. (TODO: would also be good to set largest eigenvalue of $A$ to 1.)
+
+\section{Expectation Maximization for SSMs}
+
+To estimate the model parameters and unobserved states, we alternate between computing the expectation value of the complete-data log likelihood
+\begin{align}
+    \mathcal{Q}(\theta^{(j)} | \theta^{(j-1)}) &= \e[\log p(\vec{x}_{1:T}, \vec{y}_{1:T}) | \mathcal{D}, \theta^{(j-1)}]
+\end{align}
+and maximizing it to find a new estimate for the parameters
+\begin{align}
+    \theta^{(j)} &= \argmax_{\theta} \mathcal{Q}(\theta | \theta^{(j-1)}).
+\end{align}
+Note the notation $\vec{a}_{1:n} = \{\vec{a}_1, \vec{a}_2, \dots, \vec{a}_n\}$. I'll use $\e_*[\ \cdot\ ] = \e_*[\ \cdot\ | \mathcal{D}, \theta^{(j-1)}]$ below for convenience.
+
+\subsection{E-step}
+
+Note that $\e_*[\ \cdot\ ] = \e_*[\e_*[\ \cdot\ | \vec{x}_{1:T}]]$. We can compute $\hat{x}_t \equiv \e_*[\vec{x}_t]$ and $P_t \equiv \Sigma_{t|T} - \hat{x}\hat{x}^T \equiv \e_*[\vec{x}_t \vec{x}_t^T]$ using the Kalman smoother (which I won't review here) with a key modification\footnote{see Shumway and Stoffer's 2017 book on time series}. The procedure proceeds as normal with the replacements
+\begin{align}
+    y_{ti} &= \begin{cases}
+        y_{ti} & \text{if observed}\\
+        0 & \text{otherwise}
+    \end{cases}\\
+    C_{ij} (D_{ij}) &= \begin{cases}
+        C_{ij}(D_{ij}) & \text{$y_{ti}$ observed}\\
+        0 & \text{otherwise}
+    \end{cases}\\
+    R_{ij} &= \begin{cases}
+        R_{ij} & \text{$y_{ti}$, $y_{tj}$ both observed}\\
+        1 & \text{$y_{ti}$, $y_{tj}$ both unobserved}\\
+        0 & \text{otherwise}
+    \end{cases}.
+\end{align}
+With the smoothed values and covariances in hand, we can now compute the expected values involving the missing components of $\vec{y}_t$:
+\begin{align}
+    \e_*[y_{ti}] &= \begin{cases}
+        y_{ti} & \text{if observed}\\
+        [C^{(j-1)} \hat{x}_t + D^{(j-1)} \vec{v}_t]_i & \text{otherwise}
+    \end{cases}\\
+    \e_*[y_{ti} x_{tj}] &= \begin{cases}
+        y_{ti} \hat{x}_{tj} & \text{if $y_{ti}$ observed}\\
+        [C^{(j-1)} P_t]_{ij} + [D^{(j-1)} \vec{v}_t]_i \hat{x}_{tj} & \text{otherwise}
+    \end{cases}\\
+    \e_*[y_{ti}] &= \begin{cases}
+        (y_{ti})^2 & \text{if observed}\\
+        [C^{(j-1)} \hat{x} + D^{(j-1)} \vec{v}_t]_i^2 + [C^{(j-1)} \Sigma_{t|T} {C^{(j-1)}}^T]_{ii}^2 + R_{ii}^{(j-1)} & \text{otherwise}
+    \end{cases}.
+\end{align}
+
+\subsection{M-step}
+
+$A$ and $B$ must be solved for simultaneously since they do not appear in separate terms in the likelihood:
+\begin{align}
+    \begin{pmatrix} A^{(j)} & B^{(j)} \end{pmatrix} M_{AB} &= N_{AB},\\
+    M_{AB} &= \begin{pmatrix}
+        \mathbb{I}_{\nlf\times\nlf} & \left[ \sum_{t=2}^T \hat{x}_{t-1} \vec{u}_t^T \right] \left[ \sum_{t=2}^T \vec{u}_t \vec{u}_t^T \right]^{-1}\\
+        \left[ \sum_{t=2}^T \vec{u}_t \hat{x}_{t-1}^T \right] \left[ \sum_{t=1}^{T-1} P_t \right]^{-1} & \mathbb{I}_{L\times L}
+    \end{pmatrix}\\
+    N_{AB} &= \begin{pmatrix}
+        \left[ \sum_{t=2}^T P_{t,t-1} \right] \left[ \sum_{t=1}^{T-1} P_t \right]^{-1} & \left[ \sum_{t=2}^T \hat{x}_t \vec{u}_t^T \right] \left[ \sum_{t=2}^T \vec{u}_t \vec{u}_t^T \right]^{-1}
+    \end{pmatrix}.
+\end{align}
+Similarly, $C$ and $D$ are obtained by solving
+\begin{align}
+    \begin{pmatrix} C^{(j)} & D^{(j)} \end{pmatrix} M_{CD} &= N_{CD},\\
+    M_{CD} &= \begin{pmatrix}
+        \mathbb{I}_{\nlf\times\nlf} & \left[ \sum_{t=1}^T \hat{x}_t \vec{v}_t^T \right] \left[ \sum_{t=1}^T \vec{v}_t \vec{v}_t^T \right]^{-1}\\
+        \left[ \sum_{t=1}^T \vec{v}_t \hat{x}_t^T \right] \left[ \sum_{t=1}^{T-1} P_t \right]^{-1} & \mathbb{I}_{M\times M}
+    \end{pmatrix}\\
+    N_{CD} &= \begin{pmatrix}
+    \left[ \sum_{t=1}^T \e_*[\vec{y}_t \vec{x}_t^T] \right] \left[ \sum_{t=1}^T P_t \right]^{-1} & \left[ \sum_{t=1}^T \e_*[\vec{y}_t] \vec{v}_t^T \right] \left[ \sum_{t=1}^T \vec{v}_t \vec{v}_t^T \right]^{-1}
+    \end{pmatrix}.
+\end{align}
+Maximizing $\mathcal{Q}$ with respect to $R$ gives
+\begin{align}
+    R_{ii}^{(j)} &= \frac{1}{T} \sum_{t=1}^T \left\{ \e_*[(y_{ti})^2] + [C^{(j)} P_t {C^{(j)}}^T]_{ii} + [D^{(j)} \vec{v}_t]_i^2 \right.\\
+    &\hspace{1.5in} \left. -2 (\e_*[\vec{y}_t \vec{x}_t^T] {C^{(j)}}^T)_{ii} - 2 [D^{(j)} \vec{v}_t]_i \e_*[y_{ti}] + 2[C^{(j)} \hat{x}_t]_i [D^{(j)} \vec{v}_t]_i \right\}.
+\end{align}
+And finally, as usual we have
+\begin{align}
+    \pi_1^{(j)} &= \hat{x}_1\\
+    \Sigma_1^{(j)} &= \Sigma_{1|T}.
+\end{align}
+
+\end{document}
+
+

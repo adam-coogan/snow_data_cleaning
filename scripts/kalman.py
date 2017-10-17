@@ -36,7 +36,7 @@ class Kalman():
     S : numpy.array(dim_z, dim_z)
         Observation Noise Estimate. For now set to R 
     '''
-    
+
     def __init__(self, mu_0, sigma_0, A, B, C, D, Q, R, state_labels=None):
         '''
         dim_mu = state dimension
@@ -83,7 +83,7 @@ class Kalman():
         self.sigma = sigma_0 # Initial state covariance 
         self.state_labels = state_labels
         self.K = None
-        
+
     def predict(self, u=None): 
         ''' Predict step for the Kalman filter.  See Murphy Sec. 18.3.1.1
         

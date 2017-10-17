@@ -1,9 +1,9 @@
 import numpy as np
-from Utilities import obsFrac, scale, descale
+#from Utilities import obsFrac, scale, descale
 from kalman import Kalman
-from scipy.stats import linregress
-from scipy.linalg import block_diag
-from scipy.signal import detrend
+#from scipy.stats import linregress
+#from scipy.linalg import block_diag
+#from scipy.signal import detrend
 from sklearn import linear_model
 
 ##### Kalman smoother
@@ -107,9 +107,15 @@ def kalman_smooth(Y, U, V, ss, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs):
     kf.A = As[ss[-1]].copy()
     kf.C = Cs[ss[-1]].copy()
     kf.R = Rs[ss[-1]].copy()
-    K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T, np.linalg.pinv(np.dot(kf.C, \
-                                                                    np.dot(sigma_pred[-1], kf.C.T)) + kf.R)))
-    sigma_lag_smooth[-1] = np.dot(np.dot((np.identity(n_LF) - np.dot(K_T, kf.C)), kf.A), sigma_filt[-2])
+    K_T = np.dot(sigma_pred[-1], np.dot(kf.C.T,
+                                        np.linalg.pinv(np.dot(kf.C,
+                                                              np.dot(sigma_pred[-1],
+                                                                     kf.C.T))
+                                                       + kf.R)))
+    sigma_lag_smooth[-1] = np.dot(np.dot((np.identity(n_LF)
+                                          - np.dot(K_T, kf.C)),
+                                         kf.A),
+                                  sigma_filt[-2])
 
     # Backwards Kalman gain
     J = np.zeros((T-1, n_LF, n_LF))
@@ -119,20 +125,28 @@ def kalman_smooth(Y, U, V, ss, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs):
         kf.A = As[ss[t]].copy()
 
         # Backward Kalman gain matrix
-        J[t] = np.dot(np.dot(sigma_filt[t], kf.A.T), np.linalg.pinv(sigma_pred[t]))
+        J[t] = np.dot(np.dot(sigma_filt[t], kf.A.T),
+                      np.linalg.pinv(sigma_pred[t]))
 
         # Smoothed mean
         mu_smooth[t] = mu_filt[t] + np.dot(J[t], mu_smooth[t+1] - mu_pred[t])
 
         # Smoothed covariance. This is explicity symmetric.
-        sigma_smooth[t, :, :] = sigma_filt[t] + np.dot(np.dot(J[t], sigma_smooth[t+1] - sigma_pred[t]), J[t].T)
+        sigma_smooth[t, :, :] = sigma_filt[t] \
+                + np.dot(np.dot(J[t],
+                                sigma_smooth[t+1] - sigma_pred[t]),
+                         J[t].T)
 
     # Lagged smoothed covariance (NOT SYMMETRIC!)
     for t in range(T-3, -1, -1):
         kf.A = As[ss[t]].copy()
 
         sigma_lag_smooth[t, :, :] = np.dot(sigma_filt[t+1], J[t].T) \
-                    + np.dot(np.dot(J[t+1], (sigma_lag_smooth[t+1] - np.dot(kf.A, sigma_filt[t+1]))), J[t].T)
+                    + np.dot(np.dot(J[t+1],
+                                    sigma_lag_smooth[t+1]
+                                    - np.dot(kf.A,
+                                             sigma_filt[t+1])),
+                             J[t].T)
 
     # Fill in missing Y values
     Y_imp = Y.copy()
@@ -183,7 +197,7 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
     E_y_x[nan_times, nan_sensors, :] = E_y_x_unobs[nan_times, nan_sensors, :]
 
     E_y_y_diag = np.einsum("it,it->it", Y, Y)
-    E_y_y_diag_unobs = np.square(np.einsum("tij,jt->it", C_olds[ss], X_hat) 
+    E_y_y_diag_unobs = np.square(np.einsum("tij,jt->it", C_olds[ss], X_hat)
             + np.einsum("tij,jt->it", D_olds[ss], V)) \
             + np.einsum("tij,tjk,tik->it", C_olds[ss], sigma_smooth, C_olds[ss]) \
             + np.einsum("tii->it", R_olds[ss])
@@ -233,7 +247,7 @@ def m_step_stable(Y, Y_imp, U, V, ss, s_list, X_hat, sigma_smooth, P, P_lag, pi0
             np.dot(np.dot(E_y[:, s_t], V[:, s_t].T), inv_sum_vv)]))
         x_CD = np.linalg.solve(A_CD.T, b_CD.T).T
 
-        # Extract A and B
+        # Extract C and D
         C_news[s_idx, :, :] = x_CD[:, 0:n_LF]
         D_news[s_idx, :, :] = x_CD[:, n_LF:]
 
@@ -313,7 +327,7 @@ def pca_est_MD(Y, n_LF, max_it=10):
         Y with missing values imputed with PCA
     """
     Y_tmp = Y.copy()
-    N = Y_tmp.shape[0]
+    #N = Y_tmp.shape[0]
 
     # Replace nans with average to start
     rowNanIdx, colNanIdx = np.where(np.isnan(Y))
@@ -436,5 +450,3 @@ def ssm_em_stable(Y, U, V, ss, s_list, n_LF, max_it, pca_max_it=50):
     X_hat, sigma_smooth, _, _, sigma_filt = kalman_smooth(Y, U, V, ss, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs)
 
     return X_hat, sigma_smooth, sigma_filt, pi0, sigma0, As, Bs, Cs, Ds, Qs, Rs
-
-

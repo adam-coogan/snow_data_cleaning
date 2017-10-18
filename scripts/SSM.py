@@ -1,44 +1,114 @@
+"""Contains a class used to represent state space models.
+
+Todo:
+    * Implement switching
+    * _pca_est assumes the data is already standardized/aligned, but I never
+        standardize it...
+
+"""
+
 import numpy as np
 from sklearn import linear_model
 
-"""
-TODO
-* Figure out convention for ordering of indices. Check every einsum and dot...
-"""
 
+class SSM(object):
+    """Represents a state space model.
 
-class SSM():
+    The model has a variety of methods available to estimate its parameters and
+    the hidden state's values.
+
+    Note:
+        Regime switching is not fully supported yet. While the Kalman filter
+        and smoother support it, the m-step methods and _ssm_setup_pca do not.
+
+    Examples:
+        Estimate the model parameters and hidden state for some observations:
+        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), [0], n_LF)
+        >>> ssm.em(num_it)
+        >>> ssm.get_y_hat()
+
+        Run the Kalman smoother and get observation estimates using
+        user-defined model parameters:
+        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), [0], n_LF)
+        >>> ssm.As = [A]
+        >>> ssm.Bs = [B]
+        >>> ssm.Cs = [C]
+        >>> ssm.Ds = [D]
+        >>> ssm.Qs = [Q]
+        >>> ssm.Rs = [R]
+        >>> ssm.pi1s = [pi1]
+        >>> ssm.sigma1s = [sigma1]
+        >>> ssm.smooth()
+        >>> ssm.get_y_hat()
+
+    """
+
     def __init__(self, y, u, v, ss, s_list, n_LF):
+        """Initialize state space model with observations.
+
+        Args:
+            y (N x T numpy.array): observation matrix
+            u (L x T numpy.array): state transition controls
+            v (M x T numpy.array): observation controls
+            ss (N_S x T numpy.array): switching state values
+            s_list (list of int): length N_S list of possible switching state
+                values
+            n_LF (int): number of latent factors to use to model the data
+
+        """
         # Inputs
+        #: N x T numpy.array: observation matrix
         self.y = y
+        #: L x T numpy.array: state transition controls
         self.u = u
+        #: M x T numpy.array: observation controls
         self.v = v
+        #: N_S x T numpy.array: switching state values
         self.ss = ss
+        #: list of int: length N_S list of possible switching state values
         self.s_list = s_list
 
         # Dimensions
         self.N, self.T = y.shape
+        #: int: dimensionality of state transition control
         self.L = u.shape[0]
+        #: int: dimensionality of observation transition control
         self.M = v.shape[0]
+        #: int: number of latent factors to use to model the data
         self.n_LF = n_LF
 
         self._init_params()
 
     def _init_params(self):
-        # Model parameters
+        """Set Q to be the n_LF x n_LF identity matrix and the other model
+        parameters to None."""
+        #: N_S x n_LF x n_LF numpy.array: state transition matrix
         self.As = None
+        #: N_S x n_LF x L numpy.array: state transition control matrix
         self.Bs = None
+        #: N_S x N x n_LF numpy.array: state transition matrix
         self.Cs = None
+        #: N_S x N x M numpy.array: state transition matrix
         self.Ds = None
-        self.Qs = None
+        #: N_S x n_LF x n_LF numpy.array: state transition matrix. Fixed to be
+        # the identity for numerical stability.
+        self.Qs = np.array(len(self.s_list) * [np.identity(self.n_LF)])
+        #: N_S x n_LF numpy.array: initial state prior mean
         self.pi1 = None
+        #: N_S x n_LF x n_LF numpy.array: initial state prior covariance
         self.sigma1 = None
 
     def _kf_predict(self, t):
+        """Run Kalman filter prediction step.
+
+        Updates predicted mean x_pred and covariance sigma_pred.
+
+        Args:
+            t (int): time at which to run prediction step. Must be between 1
+                and T-1.
+
         """
-        Runs Kalman filter prediction step
-        """
-        # sigma_{t|t-1}
+        # sigma_t|t-1
         self.sigma_pred[t-1] = np.dot(np.dot(self.As[self.ss[t]],
                                              self.sigma_filt[t-1]),
                                       self.As[self.ss[t]].T) \
@@ -49,7 +119,7 @@ class SSM():
         self.sigma_pred[t-1] = 0.5 * (self.sigma_pred[t-1]
                                       + self.sigma_pred[t-1].T)
 
-        # x_{t|t-1}
+        # x_t|t-1
         if self.u is None:
             self.x_pred[:, t-1] = np.dot(self.As[self.ss[t]],
                                          self.x_filt[:, t-1])
@@ -59,10 +129,19 @@ class SSM():
                     + np.dot(self.Bs[self.ss[t]], self.u[:, t])
 
     def _kf_update(self, t):
-        '''
-        Add a new measurement (z) to the Kalman filter. If z is None, nothing
-        is changed.  Murphy Sec. 18.3.1.2
-        '''
+        """Run Kalman filter update step
+
+        Handles partial observations by zeroing out corresponding components of
+        the observation vector and parameter matrices. If no observations were
+        made, the predictive mean and covariance are used as the filtered ones.
+        See pdf documentation of the method as well as Murphy 18.3.1.2 and
+        Shumway and Stoffer.  x_filt and sigma_filt are updated.
+
+        Args:
+            t (int): time at which to run update step. Must be between 1 and
+                T-1.
+
+        """
         # Check whether there were any observations: get indices of sensors
         # with no observations
         nan_ss = np.where(np.isnan(self.y[:, t]))[0]
@@ -115,17 +194,21 @@ class SSM():
             self.sigma_filt[:, t] = self.sigma_pred[t-1]
 
     def filter(self):
-        """
-        Runs the Kalman filter
-        """
+        """ Runs the Kalman filter, updating the predictive and filtered means
+        and covariances."""
         # Filtered mean and covariance x_t|t, sigma_t|t
+        #: n_LF x T numpy.array: filtered means x_t|t. Indexed by t.
         self.x_filt = np.zeros([self.n_LF, self.T])
         self.x_filt[:, 0] = self.pi1.copy()
+        #: T x n_LF x n_LF numpy.array: filtered covariances Sigma_t|t. Indexed
+        # by t.
         self.sigma_filt = np.zeros([self.T, self.n_LF, self.n_LF])
         self.sigma_filt[0] = self.sigma1.copy()
 
-        # Predictive mean and covariance x_t|t-1, sigma_t|t-1. Indexed by t-1!
+        #: n_LF x T-1 numpy.array: predictive means x_t|t-1. Indexed by t-1.
         self.x_pred = np.zeros([self.n_LF, self.T-1])
+        #: T-1 x n_LF x n_LF numpy.array: predictive covariances Sigma_t|t-1.
+        # Indexed by t-1.
         self.sigma_pred = np.zeros([self.T-1, self.n_LF, self.n_LF])
 
         for t in range(1, self.T):
@@ -133,17 +216,25 @@ class SSM():
             self._kf_update(t)
 
     def smooth(self):
-        """
-        Runs Kalman smoother (after running smoother)
+        """Run the Kalman smoother after running the Kalman filter.
+
+        In addition to computing the smoothed means and covariances, the lagged
+        covariance, smoothed distribution's second moment and lagged second
+        moment are computed.
+
         """
         # Run filter first
         self.filter()
 
         # Smoothed mean and covariance, x_t|T and sigma_t|T
+        #: n_LF x T numpy.array: smoothed means x_t|T. Indexed by t.
         self.x_smooth = np.zeros([self.n_LF, self.T])
+        #: T x n_LF x n_LF numpy.array: smoothed covariances Sigma_t|T. Indexed
+        # by t.
         self.sigma_smooth = np.zeros((self.T, self.n_LF, self.n_LF))
 
-        # Lagged covariance. Indexed by t-1!
+        #: T-1 x n_LF x n_LF numpy.array: smoothed lagged covariances
+        # Sigma_{t,t-1}. Indexed by t-1!
         self.sigma_lag_smooth = np.zeros((self.T-1, self.n_LF, self.n_LF))
 
         # Initialize: sigma_T|T = sigma_T|T(filtered)
@@ -192,23 +283,33 @@ class SSM():
                                              self.sigma_filt[t+1])),
                              J[t].T)
 
-        # Second moment
+        #: T x n_LF x n_LF numpy.array: smoothed second moment P_t|T. Indexed by
+        # t.
         self.P = self.sigma_smooth \
                 + np.einsum("it,jt->tij",
                             self.x_smooth,
                             self.x_smooth)
-        # Lagged second moment
+        #: T-1 x n_LF x n_LF numpy.array: smoothed lagged second moment
+        # P_{t,t-1}. Indexed by t-1!
         self.P_lag = self.sigma_lag_smooth \
                 + np.einsum("it,jt->tij",
                             self.x_smooth[:, 1:],
                             self.x_smooth[:, :-1])
 
     def _pca_est(self, y_pca):
-        """
-        Uses PCA approach from Bai and Ng 2002 to estimate C and X.
+        """Estimate C and x using the PCA algorithm from Bai and Ng 2002.
 
-        TODO: assumes the data is already standardized!
-        TODO: revise to handle switching
+        See Section 3 of Determining the Number of Factors in Approximate
+        Factor Models, Jushan Bai and Serena Ng, Econometrica vol. 70 no. 1,
+        Jan 2002 191-221 for details.
+
+        Args:
+            y_pca (N x T numpy.array): observation array with missing
+                observations filled in.
+
+        Returns:
+            N x n_LF numpy.array, n_LF x T numpy.array: estimate of C and x.
+
         """
         # Observation covariance
         sigma_y = np.dot(y_pca, y_pca.T)
@@ -227,26 +328,20 @@ class SSM():
         return C_pca, x_pca
 
     def pca_est_MD(self, num_it):
-        """
-        Performs PCA fit to C, X using the missing data strategy from Bai+Ng
-        2002.
+        """Estimate C, x and missing observations using the PCA EM algorithm
+        from Bai and Ng 2002.
 
-        TODO: assumes the data is already standardized!
-        TODO: revise to handle switching
+        See the brief discussion in Section 7 of Determining the Number of
+        Factors in Approximate Factor Models, Jushan Bai and Serena Ng,
+        Econometrica vol. 70 no. 1, Jan 2002 191-221 for details.
 
-        Arguments
-        -Y: N x T numpy array
-            Data array
-        -n_LF: int
-            Number of latent variables to use
+        Args:
+            num_it (int): number of EM iterations to run.
 
-        Returns
-        -N x n_LF numpy array
-            Estimate of C
-        -n_LF x T numpy array
-            Estimate of X
-        -N x T numpy array
-            Y with missing values imputed with PCA
+        Returns:
+            N x n_LF numpy.array, n_LF x T numpy.array, N x T numpy.array:
+                estimates of C, x and y with missing values filled in.
+
         """
         y_pca = self.y.copy()
 
@@ -267,8 +362,17 @@ class SSM():
         return C_pca, x_pca, y_pca
 
     def _ssm_setup_pca(self, pca_num_it):
-        """
-        Initializes SSM parameters using PCA estimates
+        """Initialize SSM parameters using PCA EM estimates.
+
+        A is computed by linearly regressing each value of the hidden state
+        onto the previous one. B, D, R, sigma1 are set to identity matrices of
+        the correction dimension. pi1 is taken to be the first value of the
+        hidden state estimated by PCA EM.
+
+        Args:
+            pca_num_it (int): numbed of PCA EM iterations to run to estimate C,
+                hidden state and missing observations.
+
         """
         # Run PCA to estimate C, hidden state and missing observations
         # TODO: standardize data!
@@ -281,22 +385,22 @@ class SSM():
         self.As = np.array(len(self.s_list) * [clf.coef_])
 
         # Extract pi_1 from hidden state estimate
-        self.pi1 = x_pca[:, 0] # 0:1 ensures that pi1 is 2D
+        self.pi1 = x_pca[:, 0]
 
-        # Fix Q to be the identity to improve numerical stability
-        self.Qs = np.array(len(self.s_list) * [np.identity(self.n_LF)])
-
-        # Initial guesses for B, D, R and Sigma_1 shouldn't matter much
+        # Q is fixed to be the identity. Initial guesses for B, D, R and Sigma_1
+        # shouldn't matter much
         self.Bs = np.array(len(self.s_list) * [np.ones([self.n_LF, self.L])])
         self.Ds = np.array(len(self.s_list) * [np.ones([self.N, self.M])])
         self.Rs = np.array(len(self.s_list) * [np.identity(self.N)])
         self.sigma1 = np.identity(self.n_LF)
 
     def _e_step(self):
-        """
-        Compute E[y_t], E[y_t x_t] and E[(y_{ti})^2] using current parameters
+        """Compute expectation values need to run EM using current parameters.
 
-        TODO: make these into member variables?
+        Returns:
+            N x T numpy.array, T x N x n_LF numpy.array, N x T numpy.array:
+                E[y_{it}], E[y_{it} x_{jt}] and E[(y_{it})^2].
+
         """
         # Run filter and smoother
         self.smooth()
@@ -341,16 +445,32 @@ class SSM():
         return E_y, E_y_x, E_y_y_diag
 
     def _m_step(self, E_y, E_y_x, E_y_y_diag):
+        """Runs the m step, updating the model's parameter to their new values.
+
+        Args:
+            E_y (N x T numpy.array): E[y_{it}].
+            E_y_x (T x N x n_LF numpy.array): E[y_{it} x_{jt}].
+            E_y_y_diag (N x T numpy.array): E[(y_{it})^2].
+
+        """
         # Loop over switching state values
         for s_idx, s in enumerate(self.s_list):
             self._m_step_A_B(s_idx, s)
             self._m_step_C_D(s_idx, s, E_y, E_y_x)
             self._m_step_R(s_idx, s, E_y, E_y_x, E_y_y_diag)
-            self. _m_step_pi1_sigma1()
+            self._m_step_pi1_sigma1()
 
     def _m_step_A_B(self, s_idx, s):
-        """
-        Runs m step for A and B
+        """Runs the m step for A and B, updating them to their new values.
+
+        Note:
+            Currently only tested with s_idx and s set to 0.
+
+        Args:
+            s_idx (int): index of parameter lists corresponding to switching
+                state.
+            s (int): value of switching state during the regime of interest.
+
         """
         # Find T_s2 = {t | t >= 2 and s_t = s}
         T_s2 = np.where(self.ss == s)[0]
@@ -384,8 +504,19 @@ class SSM():
         self.Bs[s_idx, :, :] = x_AB[:, self.n_LF:]
 
     def _m_step_C_D(self, s_idx, s, E_y, E_y_x):
-        """
-        Runs m step for C and D
+        """Runs the m step for C and D, updating them to their new values.
+
+        Note:
+            Currently only tested with s_idx and s set to 0.
+
+        Args:
+            s_idx (int): index of parameter lists corresponding to switching
+                state.
+            s (int): value of switching state during the regime of interest.
+            E_y (N x T numpy.array): E[y_{it}].
+            E_y_x (T x N x n_LF numpy.array): E[y_{it} x_{jt}].
+            E_y_y_diag (N x T numpy.array): E[(y_{it})^2].
+
         """
         # Find T_s = {t | s_t = s}
         T_s = np.where(self.ss == s)[0]
@@ -408,9 +539,20 @@ class SSM():
         self.Ds[s_idx, :, :] = x_CD[:, self.n_LF:]
 
     def _m_step_R(self, s_idx, s, E_y, E_y_x, E_y_y_diag):
-        """
-        Runs m step for R. Must run have computed new values for C and D before
-        calling this function!
+        """Runs m step for R, updating it to its new value.
+
+        Note:
+            Must run have computed new values for C and D before calling this
+            function. Currently only tested with s_idx and s set to 0.
+
+        Args:
+            s_idx (int): index of parameter lists corresponding to switching
+                state.
+            s (int): value of switching state during the regime of interest.
+            E_y (N x T numpy.array): E[y_{it}].
+            E_y_x (T x N x n_LF numpy.array): E[y_{it} x_{jt}].
+            E_y_y_diag (N x T numpy.array): E[(y_{it})^2].
+
         """
         # Find {t | s_t = s}
         s_t = np.where(self.ss == s)[0]
@@ -440,14 +582,32 @@ class SSM():
                 / float(self.T)
 
     def _m_step_pi1_sigma1(self):
+        """Runs the m step for pi1 and sigma1, updating them to their new
+        values."""
         # Initial state mean
-        self.pi1 = self.x_smooth[:, 0] # 0:1 ensures that pi1 is 2D
+        self.pi1 = self.x_smooth[:, 0]
 
         # Initial state covariance
         self.sigma1 = self.P[0, :, :] - np.outer(self.x_smooth[:, 0],
                                                  self.x_smooth[:, 0].T)
 
     def em(self, num_it, pca_num_it=50):
+        """Runs EM algorithm described in the algorithm notes file.
+
+        The model's parameters are initialized using PCA EM. Each EM iteration
+        consists of an e step that updates the filtering and smoothing
+        quantities followed by the m step, which updates the model parameters.
+        After the EM iterations, the smoother is run a final time using the last
+        m-step parameters. See the notes in ssm_em.pdf for full details on the
+        algorithm.
+
+        Args:
+            num_it (int): number of EM iterations to run. Must be non-negative.
+            pca_num_it (int): number of PCA EM iterations to run to initialize
+                the model's parameters. Should have little impact. Defaults to
+                50.
+
+        """
         # First estimate parameters using PCA
         self._ssm_setup_pca(pca_num_it)
 
@@ -460,9 +620,8 @@ class SSM():
         self.smooth()
 
     def get_y_hat(self):
-        """
-        Fill in missing Y values using current parameters and smoothed hidden state values
-        """
+        """Use the current model parameters and smoothed means to compute
+        expected observation for each sensor at each time."""
         return np.einsum("tij,jt->it", self.Cs[self.ss], self.x_smooth) \
                 + np.einsum("tij,jt->it", self.Ds[self.ss], self.v)
 

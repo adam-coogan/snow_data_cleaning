@@ -23,80 +23,87 @@ class SSM(object):
 
     Examples:
         Estimate the model parameters and hidden state for some observations:
-        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), [0], n_LF)
+        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), n_LF)
         >>> ssm.em(num_it)
         >>> ssm.get_y_hat()
 
         Run the Kalman smoother and get observation estimates using
         user-defined model parameters:
-        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), [0], n_LF)
-        >>> ssm.As = [A]
-        >>> ssm.Bs = [B]
-        >>> ssm.Cs = [C]
-        >>> ssm.Ds = [D]
-        >>> ssm.Qs = [Q]
-        >>> ssm.Rs = [R]
-        >>> ssm.pi1s = [pi1]
-        >>> ssm.sigma1s = [sigma1]
+        >>> ssm = SSM(y, u, v, numpy.array(T * [0]), n_LF)
+        >>> ssm.As = numpy.array([A])
+        >>> ssm.Bs = numpy.array([B])
+        >>> ssm.Cs = numpy.array([C])
+        >>> ssm.Ds = numpy.array([D])
+        >>> ssm.Qs = numpy.array([Q])
+        >>> ssm.Rs = numpy.array([R])
+        >>> ssm.pi1s = numpy.array([pi1])
+        >>> ssm.sigma1s = numpy.array([sigma1])
         >>> ssm.smooth()
         >>> ssm.get_y_hat()
 
+    Attributes:
+        y (N x T numpy.array): observation matrix
+        u (L x T numpy.array): state transition controls
+        v (M x T numpy.array): observation controls
+        ss (1 x T numpy.array): switching state values. The values of the
+            switching state must be integers between 0 and the number of
+            switching states N_s minus one, without skipping values.
+        N_s (int): number of switching states (ie, number of unique values in
+            ss).
+        L (int): dimensionality of state transition control
+        M (int): dimensionality of observation transition control
+        n_LF (int): number of latent factors to use to model the data
+        As (N_s x n_LF x n_LF numpy.array): state transition matrices
+        Bs (N_s x n_LF x L numpy.array): state transition control matrices
+        Cs (N_s x N x n_LF numpy.array): observation matrices
+        Ds (N_s x N x M numpy.array): observation control matrices
+        Qs (N_s x N x N numpy array): observation noise covariance matrices.
+            Set to be the identity for numerical stability.
+        Rs (N_s x n_LF x n_LF numpy array): state noise covariance matrices.
+            Taken to be diagonal for numerical stability.
+        pi1 (n_LF numpy.array): initial state prior mean
+        sigma1 (n_LF x n_LF numpy.array): initial state prior covariance
     """
 
-    def __init__(self, y, u, v, ss, s_list, n_LF):
+    def __init__(self, y, n_LF, u=None, v=None, ss=None):
         """Initialize state space model with observations.
 
         Args:
             y (N x T numpy.array): observation matrix
-            u (L x T numpy.array): state transition controls
-            v (M x T numpy.array): observation controls
-            ss (N_S x T numpy.array): switching state values
-            s_list (list of int): length N_S list of possible switching state
-                values
+            u (L x T numpy.array): state transition controls. Defaults to zeros.
+            v (M x T numpy.array): observation controls. Defaults to ones.
+            ss (N_s x T numpy.array): switching state values. Defaults to
+                zeros.
             n_LF (int): number of latent factors to use to model the data
 
         """
-        # Inputs
-        #: N x T numpy.array: observation matrix
         self.y = y
-        #: L x T numpy.array: state transition controls
-        self.u = u
-        #: M x T numpy.array: observation controls
-        self.v = v
-        #: N_S x T numpy.array: switching state values
-        self.ss = ss
-        #: list of int: length N_S list of possible switching state values
-        self.s_list = s_list
-
-        # Dimensions
         self.N, self.T = y.shape
-        #: int: dimensionality of state transition control
-        self.L = u.shape[0]
-        #: int: dimensionality of observation transition control
-        self.M = v.shape[0]
-        #: int: number of latent factors to use to model the data
+
+        # If u isn't provided, don't bias the state transitions
+        if u is None:
+            self.u = np.zeros([1, self.T])
+        else:
+            self.u = u
+        self.L = self.u.shape[0]
+
+        # If v isn't provide, let each sensor have its own constant bias
+        if v is None:
+            self.v = np.ones([1, self.T])
+        else:
+            self.v = v
+        self.M = self.v.shape[0]
+
+        if ss is None:
+            self.ss = np.zeros(self.T, dtype=int)
+        else:
+            self.ss = ss
+
+        # Number of switching states
+        self.N_s = np.unique(ss).size
         self.n_LF = n_LF
 
-        self._init_params()
-
-    def _init_params(self):
-        """Set Q to be the n_LF x n_LF identity matrix and the other model
-        parameters to None."""
-        #: N_S x n_LF x n_LF numpy.array: state transition matrix
-        self.As = None
-        #: N_S x n_LF x L numpy.array: state transition control matrix
-        self.Bs = None
-        #: N_S x N x n_LF numpy.array: state transition matrix
-        self.Cs = None
-        #: N_S x N x M numpy.array: state transition matrix
-        self.Ds = None
-        #: N_S x n_LF x n_LF numpy.array: state transition matrix. Fixed to be
-        # the identity for numerical stability.
-        self.Qs = np.array(len(self.s_list) * [np.identity(self.n_LF)])
-        #: N_S x n_LF numpy.array: initial state prior mean
-        self.pi1 = None
-        #: N_S x n_LF x n_LF numpy.array: initial state prior covariance
-        self.sigma1 = None
+        self.Qs = np.array(self.N_s * [np.identity(self.n_LF)])
 
     def _kf_predict(self, t):
         """Run Kalman filter prediction step.
@@ -377,21 +384,21 @@ class SSM(object):
         # Run PCA to estimate C, hidden state and missing observations
         # TODO: standardize data!
         C_pca, x_pca, y_pca = self.pca_est_MD(pca_num_it)
-        self.Cs = np.array(len(self.s_list) * [C_pca])
+        self.Cs = np.array(self.N_s * [C_pca])
 
         # Estimate A by regressing state onto its lag
         clf = linear_model.LinearRegression()
         clf.fit(x_pca[:, 0:-1].T, x_pca[:, 1:].T)
-        self.As = np.array(len(self.s_list) * [clf.coef_])
+        self.As = np.array(self.N_s * [clf.coef_])
 
         # Extract pi_1 from hidden state estimate
         self.pi1 = x_pca[:, 0]
 
         # Q is fixed to be the identity. Initial guesses for B, D, R and Sigma_1
         # shouldn't matter much
-        self.Bs = np.array(len(self.s_list) * [np.ones([self.n_LF, self.L])])
-        self.Ds = np.array(len(self.s_list) * [np.ones([self.N, self.M])])
-        self.Rs = np.array(len(self.s_list) * [np.identity(self.N)])
+        self.Bs = np.array(self.N_s * [np.ones([self.n_LF, self.L])])
+        self.Ds = np.array(self.N_s * [np.ones([self.N, self.M])])
+        self.Rs = np.array(self.N_s * [np.identity(self.N)])
         self.sigma1 = np.identity(self.n_LF)
 
     def _e_step(self):
@@ -454,21 +461,19 @@ class SSM(object):
 
         """
         # Loop over switching state values
-        for s_idx, s in enumerate(self.s_list):
-            self._m_step_A_B(s_idx, s)
-            self._m_step_C_D(s_idx, s, E_y, E_y_x)
-            self._m_step_R(s_idx, s, E_y, E_y_x, E_y_y_diag)
+        for s in range(self.N_s):
+            self._m_step_A_B(s)
+            self._m_step_C_D(s, E_y, E_y_x)
+            self._m_step_R(s, E_y, E_y_x, E_y_y_diag)
             self._m_step_pi1_sigma1()
 
-    def _m_step_A_B(self, s_idx, s):
+    def _m_step_A_B(self, s):
         """Runs the m step for A and B, updating them to their new values.
 
         Note:
-            Currently only tested with s_idx and s set to 0.
+            Currently only tested with s set to 0.
 
         Args:
-            s_idx (int): index of parameter lists corresponding to switching
-                state.
             s (int): value of switching state during the regime of interest.
 
         """
@@ -500,18 +505,16 @@ class SSM(object):
                                    np.dot(sum_x_u, inv_sum_uu)]))
         x_AB = np.linalg.solve(M_AB.T, N_AB.T).T
         # Extract A and B
-        self.As[s_idx, :, :] = x_AB[:, 0:self.n_LF]
-        self.Bs[s_idx, :, :] = x_AB[:, self.n_LF:]
+        self.As[s, :, :] = x_AB[:, 0:self.n_LF]
+        self.Bs[s, :, :] = x_AB[:, self.n_LF:]
 
-    def _m_step_C_D(self, s_idx, s, E_y, E_y_x):
+    def _m_step_C_D(self, s, E_y, E_y_x):
         """Runs the m step for C and D, updating them to their new values.
 
         Note:
-            Currently only tested with s_idx and s set to 0.
+            Currently only tested with s set to 0.
 
         Args:
-            s_idx (int): index of parameter lists corresponding to switching
-                state.
             s (int): value of switching state during the regime of interest.
             E_y (N x T numpy.array): E[y_{it}].
             E_y_x (T x N x n_LF numpy.array): E[y_{it} x_{jt}].
@@ -535,19 +538,17 @@ class SSM(object):
         x_CD = np.linalg.solve(M_CD.T, N_CD.T).T
 
         # Extract C and D
-        self.Cs[s_idx, :, :] = x_CD[:, 0:self.n_LF]
-        self.Ds[s_idx, :, :] = x_CD[:, self.n_LF:]
+        self.Cs[s, :, :] = x_CD[:, 0:self.n_LF]
+        self.Ds[s, :, :] = x_CD[:, self.n_LF:]
 
-    def _m_step_R(self, s_idx, s, E_y, E_y_x, E_y_y_diag):
+    def _m_step_R(self, s, E_y, E_y_x, E_y_y_diag):
         """Runs m step for R, updating it to its new value.
 
         Note:
             Must run have computed new values for C and D before calling this
-            function. Currently only tested with s_idx and s set to 0.
+            function. Currently only tested with s set to 0.
 
         Args:
-            s_idx (int): index of parameter lists corresponding to switching
-                state.
             s (int): value of switching state during the regime of interest.
             E_y (N x T numpy.array): E[y_{it}].
             E_y_x (T x N x n_LF numpy.array): E[y_{it} x_{jt}].
@@ -557,29 +558,28 @@ class SSM(object):
         # Find {t | s_t = s}
         s_t = np.where(self.ss == s)[0]
 
-        self.Rs[s_idx, :, :] = np.diag(np.sum(E_y_y_diag[:, s_t], axis=1)
+        self.Rs[s, :, :] = np.diag(np.sum(E_y_y_diag[:, s_t], axis=1)
                 + np.sum(np.einsum("ij,tjk,ik->it",
-                                   self.Cs[s_idx, :, :],
+                                   self.Cs[s, :, :],
                                    self.P[s_t, :, :],
-                                   self.Cs[s_idx, :, :]),
+                                   self.Cs[s, :, :]),
                          axis=1)
-                + np.sum(np.square(np.dot(self.Ds[s_idx, :, :],
-                                          self.v[:, s_t])),
+                + np.sum(np.square(np.dot(self.Ds[s, :, :], self.v[:, s_t])),
                          axis=1)
                 - 2.0 * np.sum(np.einsum("tij,ij->it",
                                          E_y_x[s_t, :, :],
-                                         self.Cs[s_idx, :, :]),
+                                         self.Cs[s, :, :]),
                                axis=1)
                 - 2.0 * np.einsum("it,it->i",
-                                  np.dot(self.Ds[s_idx, :, :],
+                                  np.dot(self.Ds[s, :, :],
                                          self.v[:, s_t]),
                                   E_y[:, s_t])
                 + 2.0 * np.einsum("it,it->i",
-                                  np.dot(self.Cs[s_idx, :, :],
+                                  np.dot(self.Cs[s, :, :],
                                          self.x_smooth[:, s_t]),
-                                  np.dot(self.Ds[s_idx, :, :],
+                                  np.dot(self.Ds[s, :, :],
                                          self.v[:, s_t]))) \
-                / float(self.T)
+                / float(s_t.size)
 
     def _m_step_pi1_sigma1(self):
         """Runs the m step for pi1 and sigma1, updating them to their new
@@ -624,4 +624,17 @@ class SSM(object):
         expected observation for each sensor at each time."""
         return np.einsum("tij,jt->it", self.Cs[self.ss], self.x_smooth) \
                 + np.einsum("tij,jt->it", self.Ds[self.ss], self.v)
+
+    def print_params(self):
+        """Print state space model's parameters."""
+        for s in range(self.N_s):
+            print "A_%i = " % s + str(self.As[s])
+            print "B_%i = " % s + str(self.Bs[s])
+            print "C_%i = " % s + str(self.Cs[s])
+            print "D_%i = " % s + str(self.Ds[s])
+            print "R_%i = " % s + str(self.Rs[s])
+            print "\n"
+
+        print "pi_1 = " + str(self.pi1)
+        print "sigma_1 = " + str(self.sigma1)
 

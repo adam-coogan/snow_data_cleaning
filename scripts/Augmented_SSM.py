@@ -671,6 +671,7 @@ class Augmented_SSM(object):
             print "B_%i = " % s + str(self.Bs[s])
             print "C_%i = " % s + str(self.Cs[s])
             print "D_%i = " % s + str(self.Ds[s])
+            print "Q_%i = " % s + str(self.Qs[s])
             print "R_%i = " % s + str(self.Rs[s])
             print "\n"
 
